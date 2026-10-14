@@ -378,9 +378,14 @@ async function connect() {
     if (r.ok) password = (await r.json()).passwort;
   } catch (_) {}
   if (!password) return;
+  // alle Verbindungs-Einstellungen festlegen: noVNC 1.0 merkt sich Werte aus einer Adresse, die
+  // jemand anderes geöffnet haben könnte (etwa host= eines fremden Servers)
+  const https = location.protocol === "https:";
   const p = new URLSearchParams({ autoconnect: 1, resize: "remote", reconnect: 1, reconnect_delay: 2000, quality: 8, compression: 2,
+    host: location.hostname, port: location.port || (https ? 443 : 80), encrypt: https ? 1 : 0, shared: 1, view_only: 0, repeaterID: "",
     path: base.slice(1) + "novnc/websockify", password });
-  $("br").src = `${here}novnc/vnc.html?n=${++loads}#${p}`;
+  // ersetzen statt neu laden: sonst landet jedes Wiederverbinden im Verlauf, und „Zurück“ verließe BR nicht
+  $("br").contentWindow.location.replace(`${here}novnc/vnc.html?n=${++loads}#${p}`);
 }
 // noVNC versucht nach einem Abbruch nur einmal neu zu verbinden. Ist BR neu gestartet (neues
 // Passwort), der Laptop aufgewacht oder das Netz zurück, lädt die Seite noVNC selbst neu.
@@ -439,14 +444,18 @@ function put(file, onProgress) {
 }
 
 let uploading = false, maxBytes = Infinity, queue = [];
-async function upload(files) {
+// `sum`: was die Runden davor geschafft haben – die Bilanz kommt erst, wenn nichts mehr wartet
+async function upload(files, sum = { ok: 0, failed: [], skipped: 0 }) {
   files = [...files];
   if (uploading) { queue.push(...files); say(`${queue.length} weitere Dateien warten …`); return; }
-  const photos = files.filter(isPhoto), skipped = files.length - photos.length;
-  if (!photos.length) { say(skipped ? "Keine Fotos dabei – BR öffnet JPEG, PNG, TIFF, HEIC und Raw-Dateien." : "", !!skipped); return; }
+  const photos = files.filter(isPhoto), skipped = sum.skipped + files.length - photos.length;
+  if (!photos.length && !sum.ok && !sum.failed.length) {
+    say(skipped ? "Keine Fotos dabei – BR öffnet JPEG, PNG, TIFF, HEIC und Raw-Dateien." : "", !!skipped);
+    return;
+  }
   uploading = true;
   const total = photos.reduce((s, f) => s + f.size, 0);
-  let done = 0, ok = 0; const failed = [];
+  let done = 0, ok = sum.ok; const failed = sum.failed;
   for (const [i, f] of photos.entries()) {
     try {
       if (f.size > maxBytes) throw new Error(`zu groß (höchstens ${maxBytes / 1048576} MB)`);
@@ -457,10 +466,10 @@ async function upload(files) {
     done += f.size;
   }
   uploading = false;
+  if (queue.length) { const more = queue; queue = []; return upload(more, { ok, failed, skipped }); }
   if (failed.length) say(`${ok} hochgeladen, ${failed.length} nicht: ${failed.join(" · ")}`, true);
   else say(`${ok} ${ok === 1 ? "Foto" : "Fotos"} hochgeladen${skipped ? ` (${skipped} ${skipped === 1 ? "Datei" : "Dateien"} ohne Foto übersprungen)` : ""}. In BR: „Importieren“ → Strg+A → OK.`);
   refresh();
-  if (queue.length) { const more = queue; queue = []; upload(more); }
 }
 
 // Gezogene Ordner (eine Speicherkarte, ein Kamera-Ordner) werden durchsucht. Die Einträge müssen

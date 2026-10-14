@@ -9,7 +9,8 @@
 # Reverse-Proxy mit HTTPS und Login (siehe README.md). Dazu verlangt der VNC-Server ein Passwort,
 # das bei jedem Start neu ausgewürfelt wird und das nur die eigene Seite abholen kann
 # (br-dateien, /api/vnc): eine fremde Webseite, die den Login im Browser mitbenutzt, kommt so
-# nicht an BR heran.
+# nicht an BR heran. Ohne Sperrliste: alle Verbindungen kommen über denselben Socket, eine
+# Sperre nach Fehlversuchen träfe also auch die eigene Seite; erraten lässt sich das Passwort nicht.
 set -euo pipefail
 
 : "${BR_DISPLAY:=:7}"
@@ -47,7 +48,8 @@ trap 'kill $(jobs -p) 2>/dev/null; wait' EXIT
 
 Xvnc "$BR_DISPLAY" -desktop BR -geometry "$BR_GEOMETRY" -depth 24 \
     -rfbport -1 -rfbunixpath "$vnc_socket" -rfbunixmode 0600 \
-    -SecurityTypes VncAuth -PasswordFile "$BR_RUN_DIR/passwd" -AlwaysShared -nolisten tcp -nolisten local &
+    -SecurityTypes VncAuth -PasswordFile "$BR_RUN_DIR/passwd" -UseBlacklist=0 \
+    -AlwaysShared -nolisten tcp -nolisten local &
 
 for _ in $(seq 100); do
     [ -S "/tmp/.X11-unix/X$display_no" ] && [ -S "$vnc_socket" ] && break

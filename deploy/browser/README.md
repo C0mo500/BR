@@ -55,7 +55,8 @@ einfügen, die Login-Datei mit `htpasswd -c /etc/nginx/br.htpasswd NAME` anlegen
 Wichtig in jedem Proxy (auch Apache, Traefik …):
 
 - `/novnc/` braucht WebSockets (Caddy kann das von selbst, nginx mit den `Upgrade`-Zeilen).
-- `/novnc/websockify` mit einem fremden `Origin`-Header abweisen (403), wie in den Vorlagen.
+- `/novnc/` für fremde Seiten sperren (403), wie in den Vorlagen: ein fremder `Origin`-Header
+  und `Sec-Fetch-Site: cross-site` oder `same-site`.
 - Uploads dürfen groß sein und sollen nicht gepuffert werden.
 - Unter einem Pfad: `/br` auf `/br/` umleiten.
 
