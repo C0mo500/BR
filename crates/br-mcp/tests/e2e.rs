@@ -158,3 +158,36 @@ fn serve_keeps_lightcrafts_progress_notifications() {
     assert!(progress >= 1, "progress notifications: {out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn null_means_not_given_and_batches_stay_one_array() {
+    let mut s = server(false);
+    let r = ok(&mut s, "br_look", json!({"look": "lc.moody", "amount": null, "id": null}));
+    assert_eq!(r["amount"], 100.0);
+    let r = call(&mut s, "br_look", json!({"look": null}));
+    assert!(r["error"]["message"].as_str().unwrap().contains("needs `look`"), "{r}");
+    let r = call(&mut s, "br_preview", json!({"id": null, "max_side": null, "format": null}));
+    assert_eq!(r["result"]["isError"], false, "{r}");
+
+    // over stdio: a batch with a rejected br_* call and a ping comes back as one array
+    let input = [
+        json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}}).to_string(),
+        json!([{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "br_adjust", "arguments": {"nope": 1}}}, {"jsonrpc": "2.0", "id": 2, "method": "ping"}]).to_string(),
+        json!([{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "br_adjust", "arguments": {"nope": 1}}}]).to_string(),
+    ]
+    .join("\n");
+    let sink = Sink::default();
+    br_mcp::serve(BrBackend::new(Headless::demo(), "demo"), false, std::io::Cursor::new(input), sink.clone()).unwrap();
+    let out = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+    let lines: Vec<Value> = out.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let arrays: Vec<&Vec<Value>> = lines.iter().filter_map(Value::as_array).collect();
+    assert_eq!(arrays.len(), 2, "{out}");
+    let ids = |a: &Vec<Value>| -> Vec<i64> {
+        let mut v: Vec<i64> = a.iter().filter_map(|r| r["id"].as_i64()).collect();
+        v.sort();
+        v
+    };
+    assert!(arrays.iter().any(|a| ids(a) == vec![1, 2]), "{out}");
+    assert!(arrays.iter().any(|a| ids(a) == vec![3]), "{out}");
+    assert!(lines.iter().filter(|l| l.is_object()).all(|l| l["id"] == 0), "only the initialize reply is a bare object: {out}");
+}

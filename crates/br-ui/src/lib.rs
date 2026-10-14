@@ -180,6 +180,8 @@ impl BrApp {
         use lightcraft_ui_egui::panels;
         panels::notices::show(&mut self.lc, ctx);
         panels::library_problem::show(&mut self.lc, ctx);
+        // answers of LightCraft's file dialogs (Choose Another Library… in the window above)
+        lightcraft_ui_egui::pick::poll(&mut self.lc, ctx);
         lightcraft_ui_egui::export_task::poll(&mut self.lc, ctx);
         lightcraft_ui_egui::export_task::poll_photos(&mut self.lc, ctx);
         // LightCraft's dialogs (a dropped preset file, a confirmation) over BR's interface
@@ -198,15 +200,22 @@ impl BrApp {
         lc.renderer.in_flight() > 0 || lc.import.is_some() || lc.export.is_some() || !lc.tasks.is_empty() || self.simple.exporting()
     }
 
-    /// Save and close the library, then stop LightCraft's workers. Call once, when the window
-    /// closes.
-    pub fn on_exit(&mut self) {
+    /// Everything closing the window does short of stopping LightCraft's workers: end a drag,
+    /// let a running export finish (unless it was cancelled), save and close the library.
+    pub fn close(&mut self) {
         simple::finish_drags(self);
-        // an export the user did not stop (Quit Anyway cancels it) still gets written
+        // an export still running gets written, unless Quit Anyway (or ✕) cancelled it
         simple::wait_for_export(self, Duration::from_secs(120));
         if let Err(e) = self.lc.session.close_library() {
             log::error!("closing the library: {e}");
         }
+    }
+
+    /// [`BrApp::close`], then stop LightCraft's workers. Call once, when the window closes: the
+    /// stop is for the whole process (LightCraft's GPU and render workers), so nothing renders
+    /// after it.
+    pub fn on_exit(&mut self) {
+        self.close();
         if !self.lc.shutdown(Duration::from_secs(2)) {
             log::warn!("background work did not stop in time");
         }

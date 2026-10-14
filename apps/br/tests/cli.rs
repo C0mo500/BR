@@ -188,3 +188,11 @@ fn a_closed_pipe_ends_quietly_and_groups_are_listed_once() {
     unique.dedup();
     assert_eq!(headings.len(), unique.len(), "{headings:?}");
 }
+
+#[test]
+fn a_failed_import_stops_before_any_command() {
+    let o = br().args(["run", "--demo", "--import", "/nonexistent/typo.jpg", "br.state"]).output().unwrap();
+    assert!(!o.status.success());
+    assert!(lines(&o.stdout).is_empty(), "no command ran on another photo");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("could not import"));
+}

@@ -276,3 +276,49 @@ fn a_pro_filter_that_hides_everything_can_be_cleared() {
     assert!(d.settle(&mut app, SETTLE));
     assert!(app.lc.session.active().is_some());
 }
+
+#[test]
+fn quit_anyway_stops_an_export_without_waiting() {
+    let (mut app, mut d) = app();
+    let dir = std::env::temp_dir().join(format!("br-ui-export-cancel-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    app.simple.export_dir = dir.clone();
+    app.simple.export_preset = br_photo::export::Preset::Instagram; // a second or more of rendering
+    app.simple.tab = Tab::Export;
+    assert!(d.settle(&mut app, SETTLE));
+    d.click(&mut app, "export.go").unwrap();
+    assert!(app.simple.exporting());
+    assert_eq!(app.lc.session.activity.cancel_all(), 1, "Quit Anyway cancels the export");
+    let t = std::time::Instant::now();
+    // what closing the window does (not LightCraft's process-wide stop: other tests run here too)
+    app.close();
+    assert!(t.elapsed() < Duration::from_secs(5), "on_exit waited {:?}", t.elapsed());
+    // the render that was running finishes on its own; it must not be written
+    std::thread::sleep(Duration::from_secs(8));
+    assert!(!dir.exists() || std::fs::read_dir(&dir).unwrap().filter_map(Result::ok).all(|e| !e.file_name().to_string_lossy().ends_with(".jpg")));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn choose_another_library_works_in_simple_mode() {
+    let (mut app, mut d) = app();
+    let lib = std::env::temp_dir().join(format!("br-ui-other-lib-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&lib);
+    let answer = lib.to_string_lossy().into_owned();
+    app.lc.services.picker = Some(Box::new(move |_req| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(vec![answer.clone()]).unwrap();
+        Ok(rx)
+    }));
+    // the window's services have a folder dialog (the button is off without one)
+    app.lc.services.pick_folder = Some(Box::new(|| None));
+    app.library_problem("/nowhere/BR Library", "This library is already open in br.", Vec::new());
+    assert!(d.settle(&mut app, SETTLE));
+    let r = app.lc.widgets.iter().find(|(id, _)| id == "button:libraryChoose").map(|(_, r)| *r).expect("the library problem window is shown");
+    d.click_at(&mut app, r.center());
+    assert!(d.settle(&mut app, SETTLE));
+    assert!(app.lc.library_problem.is_none(), "the chosen library opened");
+    assert_eq!(app.library.as_deref(), Some(lib.to_string_lossy().as_ref()));
+    app.close();
+    let _ = std::fs::remove_dir_all(&lib);
+}

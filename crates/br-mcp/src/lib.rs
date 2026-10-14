@@ -218,6 +218,10 @@ fn check_args(def: &Value, args: &Value) -> Result<(), String> {
             let known: Vec<&String> = props.keys().collect();
             return Err(format!("unknown argument `{k}` for {name} (known: {known:?})"));
         };
+        // an optional argument sent as null (strict tool-calling modes do) is not given
+        if v.is_null() {
+            continue;
+        }
         let ok = match schema["type"].as_str() {
             Some("integer") => v.is_u64() || v.is_i64(),
             Some("number") => v.as_f64().is_some_and(f64::is_finite),
@@ -244,7 +248,7 @@ fn check_args(def: &Value, args: &Value) -> Result<(), String> {
         }
     }
     for r in def["inputSchema"]["required"].as_array().into_iter().flatten().filter_map(Value::as_str) {
-        if !given.contains_key(r) {
+        if given.get(r).is_none_or(Value::is_null) {
             return Err(format!("{name} needs `{r}`"));
         }
     }
@@ -284,12 +288,15 @@ fn front(tools: &[Value], msg: Value) -> Front {
             let Some(def) = tools.iter().find(|t| t["name"] == name.as_str()) else {
                 return Front::Reply(rpc_error(id, -32602, format!("unknown tool `{name}`")));
             };
-            let args = match msg["params"].get("arguments") {
+            let mut args = match msg["params"].get("arguments") {
                 None | Some(Value::Null) => json!({}),
                 Some(a) => a.clone(),
             };
             if let Err(e) = check_args(def, &args) {
                 return Front::Reply(rpc_error(id, -32602, e));
+            }
+            if let Some(o) = args.as_object_mut() {
+                o.retain(|_, v| !v.is_null());
             }
             let (call, call_args) = if name == "br_preview" {
                 let mut a = Map::new();
@@ -407,6 +414,8 @@ pub fn serve(backend: BrBackend, full: bool, input: impl BufRead, output: impl W
     let tools = Arc::new(tools());
     let out = Arc::new(Mutex::new(output));
     let pending: Arc<Mutex<HashMap<String, Patch>>> = Arc::default();
+    // answers BR gave itself inside a batch, by the id of a request LightCraft answers in it
+    let extras: Arc<Mutex<HashMap<String, Vec<Value>>>> = Arc::default();
     let (lc_in, mut to_lc) = std::io::pipe()?;
     let (from_lc, lc_out) = std::io::pipe()?;
     // LightCraft's server is not `Send`: it is built on the thread that runs it
@@ -414,13 +423,23 @@ pub fn serve(backend: BrBackend, full: bool, input: impl BufRead, output: impl W
         .name("br-mcp-lightcraft".into())
         .spawn(move || Server::new(Box::new(backend)).with_command_tools(full).serve(BufReader::new(lc_in), lc_out))?;
     let pump = {
-        let (tools, out, pending) = (tools.clone(), out.clone(), pending.clone());
+        let (tools, out, pending, extras) = (tools.clone(), out.clone(), pending.clone(), extras.clone());
         std::thread::Builder::new().name("br-mcp-out".into()).spawn(move || -> std::io::Result<()> {
             for line in BufReader::new(from_lc).lines() {
                 let line = line?;
                 let text = match serde_json::from_str::<Value>(&line) {
                     Ok(mut v) => {
                         patch_reply(&tools, &pending, &mut v);
+                        if let Value::Array(a) = &mut v {
+                            let ids: Vec<String> = a.iter().filter_map(|r| valid_id(r.get("id")).map(Value::to_string)).collect();
+                            if let Ok(mut map) = extras.lock() {
+                                for id in ids {
+                                    if let Some(more) = map.remove(&id) {
+                                        a.extend(more);
+                                    }
+                                }
+                            }
+                        }
                         v.to_string()
                     }
                     Err(_) => line,
@@ -448,10 +467,10 @@ pub fn serve(backend: BrBackend, full: bool, input: impl BufRead, output: impl W
         };
         let forward = match serde_json::from_str::<Value>(line.trim()) {
             Ok(Value::Array(batch)) if !batch.is_empty() => {
-                let mut keep = Vec::new();
+                let (mut keep, mut rejected) = (Vec::new(), Vec::new());
                 for m in batch {
                     match front(&tools, m) {
-                        Front::Reply(r) => reply(&r)?,
+                        Front::Reply(r) => rejected.push(r),
                         Front::Forward(m, p) => {
                             if let (Some((id, p)), Ok(mut map)) = (p, pending.lock()) {
                                 map.insert(id, p);
@@ -459,6 +478,16 @@ pub fn serve(backend: BrBackend, full: bool, input: impl BufRead, output: impl W
                             keep.push(m);
                         }
                     }
+                }
+                // the batch is answered as one array: BR's own answers join LightCraft's
+                match keep.iter().find_map(|m| valid_id(m.get("id")).filter(|_| m.get("method").is_some())) {
+                    Some(id) if !rejected.is_empty() => {
+                        if let Ok(mut map) = extras.lock() {
+                            map.insert(id.to_string(), rejected);
+                        }
+                    }
+                    _ if !rejected.is_empty() => reply(&Value::Array(rejected))?,
+                    _ => {}
                 }
                 (!keep.is_empty()).then(|| Value::Array(keep).to_string())
             }

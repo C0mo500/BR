@@ -125,6 +125,9 @@ impl Preset {
     }
 }
 
+/// The error of a cancelled [`Plan::run_with_cancel`].
+pub const CANCELLED: &str = "export cancelled";
+
 /// Where an export goes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
@@ -159,11 +162,24 @@ impl Plan {
         self.run_with_cancel(&AtomicBool::new(false))
     }
 
-    /// [`Plan::run`], stopping before the next photo once `cancel` is set.
+    /// [`Plan::run`] that can be stopped: once `cancel` is set, nothing more is written (the
+    /// render already running finishes, LightCraft has no way to stop it) and the run returns
+    /// the error [`CANCELLED`].
     pub fn run_with_cancel(self, cancel: &AtomicBool) -> Result<Vec<Value>, String> {
-        let mut write = |path: &str, bytes: &[u8]| write_file(path, bytes);
+        let mut write = |path: &str, bytes: &[u8]| {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(CANCELLED.to_string());
+            }
+            write_file(path, bytes)
+        };
         let exists = |path: &str| Path::new(path).exists();
-        run_batch(self.items, &self.opts, &self.dest, &mut write, &exists, true, &mut |_, _| !cancel.load(Ordering::Relaxed))
+        let r = run_batch(self.items, &self.opts, &self.dest, &mut write, &exists, true, &mut |_, _| !cancel.load(Ordering::Relaxed));
+        match r {
+            // stopped before it started, or before writing: nothing was written
+            Ok(files) if files.is_empty() && cancel.load(Ordering::Relaxed) => Err(CANCELLED.to_string()),
+            Err(_) if cancel.load(Ordering::Relaxed) => Err(CANCELLED.to_string()),
+            r => r,
+        }
     }
 }
 
@@ -207,6 +223,9 @@ pub fn prepare(s: &mut Session, id: PhotoId, preset: Preset, target: &Target) ->
     let dest = match target {
         Target::Dir(dir) => Destination { dir: dir.to_string_lossy().into_owned(), exact: None },
         Target::File(path) => {
+            if path.is_dir() || path.as_os_str().to_string_lossy().ends_with(['/', '\\']) {
+                return Err(format!("{} is a folder: give a .jpg file name, or export into the folder with `dir`", path.display()));
+            }
             let path = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
                 Some("jpg" | "jpeg") => path.clone(),
                 None => path.with_extension("jpg"),
@@ -363,6 +382,31 @@ mod tests {
         assert!(e.contains(".jpg"), "{e}");
         let files = export(&mut s, id, Preset::Square, &Target::File(dir.join("noext"))).unwrap();
         assert!(files[0]["path"].as_str().unwrap().ends_with("noext.jpg"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_is_not_an_exact_file() {
+        let dir = temp_dir("folderpath");
+        let (mut s, id) = session_with_jpeg(&dir, 200, 100);
+        for p in [dir.clone(), dir.join("new/")] {
+            let e = prepare(&mut s, id, Preset::Square, &Target::File(p)).err().unwrap();
+            assert!(e.contains("is a folder"), "{e}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cancelled_export_writes_nothing() {
+        lightcraft_engine::gpu::set_enabled(false);
+        let dir = temp_dir("cancel");
+        let (mut s, id) = session_with_jpeg(&dir, 300, 200);
+        let out = dir.join("out");
+        let plan = prepare(&mut s, id, Preset::Square, &Target::Dir(out.clone())).unwrap();
+        // cancelled while it renders: the flag is set before anything is written
+        let e = plan.run_with_cancel(&AtomicBool::new(true)).unwrap_err();
+        assert_eq!(e, CANCELLED);
+        assert!(!out.exists() || std::fs::read_dir(&out).unwrap().next().is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

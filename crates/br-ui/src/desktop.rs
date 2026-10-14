@@ -105,6 +105,32 @@ fn open_command(target: &str) -> std::process::Command {
     }
 }
 
+/// Explorer's `/select,"<path>"`: the quotes keep a path with spaces (`BR Exports`) whole, and
+/// the `\\?\` prefix Windows adds to long paths is something Explorer does not understand.
+fn explorer_select_arg(path: &str) -> String {
+    let path = path.replace('/', "\\").replace('"', "");
+    let path = match path.strip_prefix(r"\\?\UNC\") {
+        Some(unc) => format!(r"\\{unc}"),
+        None => path.strip_prefix(r"\\?\").unwrap_or(path.as_str()).to_string(),
+    };
+    format!("/select,\"{path}\"")
+}
+
+/// `explorer /select,"<path>"`, passed as written (Rust would otherwise quote the whole argument
+/// again, which Explorer reads as a folder to open).
+fn explorer_select_command(path: &str) -> std::process::Command {
+    let mut c = std::process::Command::new("explorer");
+    let arg = explorer_select_arg(path);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.raw_arg(arg);
+    }
+    #[cfg(not(windows))]
+    c.arg(arg);
+    c
+}
+
 /// The services LightCraft's Pro interface uses in a window: the base set plus file dialogs,
 /// links and Show in Folder. `ctx` repaints when a dialog closes.
 pub fn services(ctx: &egui::Context) -> Services {
@@ -217,7 +243,7 @@ pub fn services(ctx: &egui::Context) -> Services {
         let status = if cfg!(target_os = "macos") {
             std::process::Command::new("open").args(["-R", file]).status()
         } else if cfg!(target_os = "windows") {
-            std::process::Command::new("explorer").arg(format!("/select,{file}")).status()
+            explorer_select_command(file).status()
         } else {
             let dir = std::path::Path::new(file).parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
             open_command(&dir).status()
@@ -234,6 +260,14 @@ mod tests {
     #[test]
     fn other_platforms_get_lower_case_once() {
         assert_eq!(dialog_extensions_for(&["NEF", "nef", ".Jpg", "jpg", ""], false), ["nef", "jpg"]);
+    }
+
+    #[test]
+    fn explorer_select_quotes_the_path() {
+        assert_eq!(explorer_select_arg(r"C:\Users\a b\Pictures\BR Exports\x.jpg"), r#"/select,"C:\Users\a b\Pictures\BR Exports\x.jpg""#);
+        assert_eq!(explorer_select_arg(r"\\?\C:\long\x.jpg"), r#"/select,"C:\long\x.jpg""#);
+        assert_eq!(explorer_select_arg(r"\\?\UNC\server\share\x.jpg"), r#"/select,"\\server\share\x.jpg""#);
+        assert_eq!(explorer_select_arg("C:/a/b.jpg"), r#"/select,"C:\a\b.jpg""#);
     }
 
     #[test]

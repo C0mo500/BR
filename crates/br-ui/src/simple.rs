@@ -79,6 +79,8 @@ impl Tab {
 struct ExportJob {
     handle: JoinHandle<Result<Vec<Value>, String>>,
     preset: Preset,
+    /// Set by the activity row's ✕ or Quit Anyway: nothing more is written.
+    cancel: Arc<AtomicBool>,
 }
 
 /// A file dialog that is open, and what its answer is for.
@@ -850,16 +852,18 @@ pub fn start_export(app: &mut BrApp, ctx: &egui::Context) {
     let target = Target::Dir(app.simple.export_dir.clone());
     match export::prepare(&mut app.lc.session, id, preset, &target) {
         Ok(plan) => {
-            // an activity task: LightCraft's quit prompt then warns about it, and Quit Anyway stops it
+            // an activity task: LightCraft's quit prompt warns about it, and Quit Anyway (or the
+            // row's ✕) cancels it: the photo being rendered is then not written
             let cancel = Arc::new(AtomicBool::new(false));
             let row = app.lc.session.activity.start("export", "Exporting", Cancel::Flag(cancel.clone()));
+            let flag = cancel.clone();
             let spawned = std::thread::Builder::new().name("br-export".into()).spawn(move || {
                 let _row = row; // listed exactly as long as the export runs
-                plan.run_with_cancel(&cancel)
+                plan.run_with_cancel(&flag)
             });
             match spawned {
                 Ok(handle) => {
-                    app.simple.export = Some(ExportJob { handle, preset });
+                    app.simple.export = Some(ExportJob { handle, preset, cancel });
                     app.simple.last_export = None;
                 }
                 Err(e) => say(app, ctx, format!("Export: {e}"), true),
@@ -869,10 +873,12 @@ pub fn start_export(app: &mut BrApp, ctx: &egui::Context) {
     }
 }
 
-/// Wait up to `timeout` for a running export to finish (when the window closes).
+/// Wait up to `timeout` for a running export to finish (when the window closes), unless it was
+/// cancelled: then nothing more gets written and there is nothing to wait for.
 pub(crate) fn wait_for_export(app: &mut BrApp, timeout: Duration) {
     let start = std::time::Instant::now();
-    while app.simple.export.as_ref().is_some_and(|j| !j.handle.is_finished()) && start.elapsed() < timeout {
+    let waiting = |j: &ExportJob| !j.handle.is_finished() && !j.cancel.load(std::sync::atomic::Ordering::Relaxed);
+    while app.simple.export.as_ref().is_some_and(waiting) && start.elapsed() < timeout {
         std::thread::sleep(Duration::from_millis(20));
     }
     if app.simple.export.as_ref().is_some_and(|j| j.handle.is_finished())
@@ -905,6 +911,7 @@ pub(crate) fn poll_export(app: &mut BrApp, ctx: &egui::Context) {
             say(app, ctx, text, false);
             app.simple.last_export = Some(files);
         }
+        Ok(Err(e)) if e == export::CANCELLED => say(app, ctx, "Export abgebrochen", false),
         Ok(Err(e)) => say(app, ctx, format!("Export fehlgeschlagen: {e}"), true),
         Err(_) => say(app, ctx, "Export unerwartet abgebrochen", true),
     }

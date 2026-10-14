@@ -153,7 +153,8 @@ fn open_session(opts: &Opts, default_library: bool) -> (Session, Option<String>,
 }
 
 /// Import `paths` (files or folders) and select what they are in the library, new or already
-/// there, so the next commands work on them. Returns LightCraft's import report.
+/// there, so the next commands work on them. Fails when nothing could be imported, so commands
+/// never fall through to some other photo. Returns LightCraft's import report.
 fn import_and_select(s: &mut Session, paths: &[String]) -> Result<Value, String> {
     let r = s.execute("library.import", &json!({"paths": expand_paths(paths)})).map_err(|e| e.to_string())?;
     let mut ids: Vec<u64> = Vec::new();
@@ -167,8 +168,16 @@ fn import_and_select(s: &mut Session, paths: &[String]) -> Result<Value, String>
             ids.push(id);
         }
     }
-    if let Some(first) = ids.first() {
-        s.execute("library.select", &json!({"ids": ids, "active": first})).map_err(|e| e.to_string())?;
+    let Some(first) = ids.first() else {
+        let why = match r["failed"].as_array().and_then(|f| f.first()) {
+            Some(f) => format!("{}: {}", f[0].as_str().unwrap_or_default(), f[1].as_str().unwrap_or_default()),
+            None => "no photos found".into(),
+        };
+        return Err(format!("could not import {}: {why}", paths.join(", ")));
+    };
+    s.execute("library.select", &json!({"ids": ids, "active": first})).map_err(|e| e.to_string())?;
+    for f in r["failed"].as_array().into_iter().flatten() {
+        log::warn!("not imported: {}: {}", f[0].as_str().unwrap_or_default(), f[1].as_str().unwrap_or_default());
     }
     Ok(r)
 }
@@ -222,11 +231,16 @@ fn window(args: &[String]) -> Result<(), String> {
         Some(other) => return Err(format!("BR_RENDERER={other}: use glow or wgpu")),
     };
     let (session, lib, problem) = open_session(&opts, true);
+    // set once eframe has made the window and its renderer: failures after that are not the
+    // renderer's start, and are never answered with a restart
+    let up = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let came_up = up.clone();
     let started = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         eframe::run_native(
             br_ui::TITLE,
             native_options(renderer),
             Box::new(move |cc| {
+                came_up.store(true, std::sync::atomic::Ordering::Relaxed);
                 let mut app = br_ui::BrApp::with_services(session, lib, br_ui::desktop::services(&cc.egui_ctx));
                 match problem {
                     // the photos are imported once the user decides what to do about the library
@@ -242,10 +256,14 @@ fn window(args: &[String]) -> Result<(), String> {
             }),
         )
     }));
+    let was_up = up.load(std::sync::atomic::Ordering::Relaxed);
     let failure = match started {
         Ok(Ok(())) => return Ok(()),
         // no display, or a broken X11/Wayland setup: another renderer cannot help
         Ok(Err(e @ (eframe::Error::WinitEventLoop(_) | eframe::Error::Winit(_)))) => return Err(format!("could not open the window: {e}")),
+        Ok(Err(e)) if was_up => return Err(format!("BR stopped: {e}")),
+        // a crash while working is a crash, not a renderer that would not start
+        Err(p) if was_up => std::panic::resume_unwind(p),
         Ok(Err(e)) => e.to_string(),
         Err(p) => format!("the renderer crashed: {}", panic_text(&*p)),
     };
@@ -255,12 +273,20 @@ fn window(args: &[String]) -> Result<(), String> {
     // a failed or crashed wgpu start can leave the event loop unusable: start again with OpenGL
     log::warn!("the window could not start with wgpu ({failure}); starting again with OpenGL");
     let exe = std::env::current_exe().map_err(|e| format!("could not open the window: {failure}; and not restart: {e}"))?;
-    let status = std::process::Command::new(exe)
-        .args(std::env::args_os().skip(1))
-        .env("BR_RENDERER", "glow")
-        .status()
-        .map_err(|e| format!("could not open the window: {failure}; and not restart: {e}"))?;
-    std::process::exit(status.code().unwrap_or(1));
+    let mut again = std::process::Command::new(exe);
+    again.args(std::env::args_os().skip(1)).env("BR_RENDERER", "glow");
+    // on Unix the new start takes this process's place (same pid: whoever started BR can stop it)
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let e = again.exec();
+        Err(format!("could not open the window: {failure}; and not restart: {e}"))
+    }
+    #[cfg(not(unix))]
+    {
+        let status = again.status().map_err(|e| format!("could not open the window: {failure}; and not restart: {e}"))?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
 }
 
 fn mcp(args: &[String]) -> Result<(), String> {
