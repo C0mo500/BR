@@ -148,14 +148,15 @@ pub fn raw_input_hook(fc: &mut FilmcraftApp, ctx: &egui::Context, raw: &mut egui
     eframe::App::raw_input_hook(fc, ctx, raw);
 }
 
-/// Draw FilmCraft in the rest of the window. FilmCraft fills its `Ui`'s whole `max_rect`, so it
-/// gets a child `Ui` that ends where BR's header ends.
-pub fn ui(fc: &mut FilmcraftApp, st: &mut VideoState, ui: &mut egui::Ui) {
+/// Draw FilmCraft in the rest of the window, and say where. FilmCraft fills its `Ui`'s whole
+/// `max_rect`, so it gets a child `Ui` that ends where BR's header (and tool row) ends.
+pub fn ui(fc: &mut FilmcraftApp, st: &mut VideoState, ui: &mut egui::Ui) -> egui::Rect {
     let rect = ui.available_rect_before_wrap();
     ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
         ui.set_clip_rect(rect);
         eframe::App::ui(fc, ui, &mut st.frame);
     });
+    rect
 }
 
 /// FilmCraft's menu bar, in BR's header.

@@ -33,6 +33,8 @@ filmcraft-export = { git = "https://github.com/storytold/filmcraft", rev = "f03e
 filmcraft-project = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
 filmcraft-render = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
 filmcraft-time = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-media = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-speech = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
 filmcraft-gpu = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
 filmcraft-platform = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
 filmcraft-automation = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }

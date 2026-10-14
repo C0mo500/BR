@@ -186,3 +186,180 @@ fn mistakes_are_reported_and_change_nothing() {
     assert_eq!(s.history.undo.len(), undo, "a failed add leaves no step behind");
     assert_eq!(br_video::state(&mut s).unwrap(), json!({"video": null}));
 }
+
+#[test]
+fn a_new_shape_fits_the_clips_and_dissolves_go_only_between_clips() {
+    if !have("ffmpeg") || !have("ffprobe") {
+        eprintln!("ffmpeg/ffprobe missing: skipped");
+        return;
+    }
+    let d = dir("format");
+    let (a, b) = (d.join("a.mp4"), d.join("b.mp4"));
+    phone_h264(&a, 3);
+    phone_h264(&b, 2);
+    let mut s = Session::default();
+    ok(&mut s, "br.video.add", json!({"paths": [a.to_string_lossy(), b.to_string_lossy()]}));
+
+    let undo = s.history.undo.len();
+    let st = ok(&mut s, "br.video.format", json!({"format": "16:9"}));
+    assert_eq!((st["format"].as_str(), st["width"].as_u64(), st["height"].as_u64()), (Some("16:9"), Some(1920), Some(1080)), "{st}");
+    assert_eq!(s.history.undo.len(), undo + 1, "a new shape is one undo step");
+
+    let undo = s.history.undo.len();
+    let r = ok(&mut s, "br.video.transition", json!({}));
+    assert_eq!(r["transitions"], 1, "two clips have one cut between them: {r}");
+    assert_eq!(s.history.undo.len(), undo + 1);
+    let seq = s.execute("sequence.inspect", json!({})).unwrap();
+    let tr = &seq["video"][0]["transitions"];
+    assert_eq!(tr.as_array().map(Vec::len), Some(1), "{seq}");
+    assert!(tr[0]["from"].is_u64() && tr[0]["to"].is_u64(), "a dissolve between two clips, not from black: {tr}");
+    assert!(br_video::execute(&mut s, "br.video.transition", &json!({})).is_err(), "the cut has its transition already");
+
+    // a look replaces the one before; without a selection it goes on every clip
+    s.state.selection.clear();
+    let r = ok(&mut s, "br.video.filter", json!({"preset": "Golden Dusk"}));
+    assert_eq!(r["clips"], 2, "no selection: every clip: {r}");
+    let r = ok(&mut s, "br.video.filter", json!({"preset": "Faded Print"}));
+    assert_eq!(r["replaced"], 2, "{r}");
+    let lumetri = |s: &mut Session| {
+        let seq = s.execute("sequence.inspect", json!({})).unwrap();
+        seq["video"][0]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["effects"].as_array().unwrap().iter().filter(|e| e["effect"] == "lumetri").count())
+            .collect::<Vec<_>>()
+    };
+    let before = lumetri(&mut s);
+    ok(&mut s, "br.video.filter", json!({"preset": "none"}));
+    let after = lumetri(&mut s);
+    assert!(after.iter().zip(&before).all(|(a, b)| a + 1 == *b), "one look less per clip: {before:?} → {after:?}");
+
+    let out = d.join("wide.mp4");
+    ok(&mut s, "br.video.export", json!({"preset": "video", "path": out.to_string_lossy(), "wait": true}));
+    let p = probe(&out);
+    let v = stream(&p, "video");
+    assert_eq!((v["width"].as_u64(), v["height"].as_u64()), (Some(1920), Some(1080)), "{p}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+fn words(list: &[(&str, f64, f64)]) -> filmcraft_project::Transcript {
+    let tick = |s: f64| filmcraft_time::Tick::from_seconds_f64(s);
+    filmcraft_project::Transcript {
+        language: "de".into(),
+        words: list.iter().map(|(t, a, b)| filmcraft_project::transcript::Word::new(*t, tick(*a), tick(*b))).collect(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn automatic_captions_come_from_the_speech_as_one_step() {
+    if !have("ffmpeg") {
+        eprintln!("ffmpeg missing: skipped");
+        return;
+    }
+    let d = dir("captions");
+    let a = d.join("talk.mp4");
+    phone_h264(&a, 4);
+    let mut s = Session::default();
+    let opts = br_video::speech::CaptionOptions::default();
+    assert!(br_video::speech::start(&s, &opts).err().unwrap().contains("noch kein Video"));
+    ok(&mut s, "br.video.add", json!({"paths": [a.to_string_lossy()]}));
+    s.transcriber = Some(std::sync::Arc::new(filmcraft_speech::FixedTranscriber {
+        transcript: words(&[("Hallo", 0.5, 0.9), ("zusammen,", 0.9, 1.4), ("willkommen", 2.0, 2.6), ("hier.", 2.6, 3.0)]),
+        id: "test".into(),
+    }));
+
+    // in the background, with progress, then into the project
+    let undo = s.history.undo.len();
+    let job = br_video::speech::start(&s, &opts).unwrap();
+    let seq = job.sequence;
+    let t0 = std::time::Instant::now();
+    let done = loop {
+        if let Some(r) = job.poll() {
+            break r.unwrap();
+        }
+        assert!(t0.elapsed().as_secs() < 60, "recognition never finished: {:?}", job.progress());
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    let r = br_video::speech::apply(&mut s, seq, done).unwrap();
+    assert!(r["captions"].as_u64().unwrap() >= 1, "{r}");
+    assert_eq!(s.history.undo.len(), undo + 1, "transcript and captions are one undo step");
+    assert_eq!(s.history.undo.last().map(|u| u.0.as_str()), Some("Auto-Untertitel"));
+    let q = s.active_sequence().unwrap();
+    assert_eq!(q.caption_tracks.len(), 1);
+    let text: Vec<String> = q.caption_tracks[0].captions.iter().map(|c| c.text.clone()).collect();
+    assert!(text.join(" ").contains("Hallo zusammen,"), "{text:?}");
+
+    // the same through the command, as the CLI and MCP run it
+    ok(&mut s, "br.video.autoCaptions", json!({"language": "de"}));
+    assert_eq!(s.active_sequence().unwrap().caption_tracks.len(), 2);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A recogniser that only stops when it is cancelled.
+struct Endless;
+
+impl filmcraft_speech::Transcriber for Endless {
+    fn id(&self) -> String {
+        "endless".into()
+    }
+    fn transcribe(
+        &self,
+        _: &[f32],
+        _: &filmcraft_speech::Options,
+        progress: filmcraft_speech::ProgressFn,
+    ) -> Result<filmcraft_project::Transcript, filmcraft_speech::SpeechError> {
+        loop {
+            if !progress(0.3, "") {
+                return Err(filmcraft_speech::SpeechError::Cancelled);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+}
+
+#[test]
+fn automatic_captions_can_be_cancelled_and_need_sound() {
+    if !have("ffmpeg") {
+        eprintln!("ffmpeg missing: skipped");
+        return;
+    }
+    let d = dir("cancel");
+    let (talk, mute) = (d.join("talk.mp4"), d.join("mute.mp4"));
+    phone_h264(&talk, 2);
+    ffmpeg(&["-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=2", "-c:v", "libx264", "-pix_fmt", "yuv420p"], &mute);
+
+    let mut s = Session::default();
+    ok(&mut s, "br.video.add", json!({"paths": [mute.to_string_lossy()]}));
+    s.transcriber = Some(std::sync::Arc::new(Endless));
+    let e = br_video::speech::start(&s, &Default::default()).err().unwrap();
+    assert!(e.contains("keinen Ton"), "{e}");
+
+    ok(&mut s, "br.video.add", json!({"paths": [talk.to_string_lossy()]}));
+    let undo = s.history.undo.len();
+    let job = br_video::speech::start(&s, &Default::default()).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    job.cancel();
+    assert_eq!(job.wait().unwrap_err(), "abgebrochen");
+    assert_eq!(s.history.undo.len(), undo, "a cancelled recognition changes nothing");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn files_are_told_apart_by_kind() {
+    for (f, video) in [
+        ("/x/IMG_0001.MOV", true),
+        ("clip.mp4", true),
+        ("song.M4A", true),
+        ("cut.fcproj", true),
+        ("subs.srt", true),
+        ("photo.jpg", false),
+        ("raw.DNG", false),
+        ("notes.txt", false),
+    ] {
+        assert_eq!(br_video::is_video_file(f), video, "{f}");
+    }
+    assert_eq!(br_video::file_kind("a.webm"), Some("video"));
+    assert_eq!(br_video::file_kind("b.heic"), None);
+}

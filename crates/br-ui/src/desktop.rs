@@ -178,6 +178,10 @@ pub fn add_filter(d: FileDialog, name: impl Into<String>, exts: &[&str]) -> File
 pub enum Pick {
     /// Photos to import.
     Photos,
+    /// Video, sound and stills for the video.
+    Media,
+    /// A music file.
+    Music,
     /// A folder.
     Folder,
 }
@@ -213,6 +217,8 @@ pub fn pick(ctx: &egui::Context, what: Pick, title: &str, start: Option<PathBuf>
             }
             let chosen = match what {
                 Pick::Photos => add_filter(d, "Fotos", lightcraft_engine::import::EXTENSIONS).pick_files().unwrap_or_default(),
+                Pick::Media => add_filter(d, "Medien", &br_video::media_extensions()).pick_files().unwrap_or_default(),
+                Pick::Music => add_filter(d, "Musik", br_video::audio_extensions()).pick_file().into_iter().collect(),
                 Pick::Folder => d.pick_folder().into_iter().collect(),
             };
             let _ = tx.send(chosen);

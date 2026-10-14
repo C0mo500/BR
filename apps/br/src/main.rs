@@ -23,8 +23,11 @@ Farbe, Ton, Ausgabe (Video, FilmCraft) und Foto (LightCraft).
 
 USAGE
   br [--library DIR | --demo] [FILES…]
-      Open the window on the Schnitt page. FILES (photos or folders) are imported into the photo
-      library and the window opens on the Foto page. The library is DIR, else
+      Open the window on the Schnitt page. FILES: videos and sound are added to the video (a new
+      one in the first clip's shape), a video project (.fcproj, EDL, XML, FCPXML, OTIO) is opened,
+      subtitle files (SRT, VTT, SCC) become captions; photos and folders are imported into the
+      photo library (folders: their photos), and with photos alone the window opens on the Foto
+      page. The library is DIR, else
       $BR_LIBRARY, else the library last opened in the window, else ~/Pictures/BR Library;
       --demo opens LightCraft's demo photos in memory and saves nothing.
       BR_RENDERER=gl draws the window with OpenGL (drivers without Vulkan, software rendering),
@@ -49,11 +52,14 @@ USAGE
       OUT is a .jpg/.jpeg file or a folder (default: $BR_EXPORTS or ~/Pictures/BR Exports).
 
   br run [--library DIR | --demo] [--import PATH]… [--keep-going] CMD [key=value…] [CMD …]
-      Run commands and print one JSON line each: BR's br.* commands (see `br commands`) or any
-      LightCraft command (develop.set, library.select, …). Values are JSON, else text
-      (dir, path, look, format and preset are always text). Imported photos are selected.
+      Run commands and print one JSON line each: BR's br.* photo commands and br.video.* video
+      commands (see `br commands`), any LightCraft command (develop.set, library.select, …) and
+      any FilmCraft command as film.<id> (film.timeline.razor, …). Values are JSON, else text
+      (dir, path, look, format, preset, text, language, model, name and fit are always text).
+      Imported photos are selected;
+      imported videos, sound and subtitles go into the video (as br.video.add).
 
-  br commands         BR's commands and their parameters
+  br commands [--film]  BR's commands and their parameters (--film: FilmCraft's)
   br looks [--json]   the looks
   br snapshot [--library DIR | --demo] [--page PAGE] [--popover looks|format|export]
               [-o OUT.png] [--size WxH] [--scale S] [FILES…]
@@ -106,7 +112,7 @@ fn main() {
         "mcp" => mcp(&rest),
         "photo" => photo(&rest),
         "run" => run(&rest),
-        "commands" => commands::COMMANDS.iter().try_for_each(|(id, label, params)| outln(format!("{id:<12} {label}\n             {params}"))),
+        "commands" => list_commands(&rest),
         "looks" => looks(&rest),
         "snapshot" => snapshot(&rest),
         _ => window(&rest, logger),
@@ -316,7 +322,9 @@ fn window(args: &[String], logger: Option<&'static logging::AppLogger>) -> Resul
         return Err(format!("unknown option `{bad}` (see br --help)"));
     }
     opts.files = rest;
-    let files = expand_paths(&opts.files);
+    // videos, sound, video projects and subtitles go to the video pages; the rest to LightCraft
+    let (videos, photos): (Vec<String>, Vec<String>) = opts.files.iter().cloned().partition(|f| br_video::is_video_file(f));
+    let files = expand_paths(&photos);
     let forced = std::env::var("BR_RENDERER").ok().map(|r| r.to_lowercase());
     let renderer = match forced.as_deref() {
         // `glow` was the separate OpenGL renderer of earlier versions: it now means OpenGL too
@@ -374,14 +382,23 @@ fn window(args: &[String], logger: Option<&'static logging::AppLogger>) -> Resul
                 app.lc.gpu_notice = true;
                 // what is on disk now: only changes are written, and nothing at all with --demo
                 let writer = prefs::PrefsWriter::new(prefs_path.filter(|_| !demo), &app.lc.ui, keep_prefs_file);
+                let videos_given = videos.len();
+                if videos_given > 0 {
+                    br_ui::cut::open_files(&mut app, &cc.egui_ctx, videos);
+                }
+                let photos_only = videos_given == 0 && !files.is_empty();
                 match problem {
                     // the photos are imported once the user decides what to do about the library
                     Some((dir, e)) => {
-                        app.open(br_ui::Page::Foto);
+                        if videos_given == 0 {
+                            app.open(br_ui::Page::Foto);
+                        }
                         app.library_problem(dir, e, files);
                     }
                     None if !files.is_empty() => {
-                        app.open(br_ui::Page::Foto);
+                        if photos_only {
+                            app.open(br_ui::Page::Foto);
+                        }
                         if let Err(e) = lightcraft_ui_egui::import::start_paths(&mut app.lc, files) {
                             log::error!("import: {e}");
                         }
@@ -570,7 +587,7 @@ struct Step {
 }
 
 /// Params that are always text, so `dir=2024` is the folder "2024", not a number.
-const TEXT_PARAMS: &[&str] = &["dir", "path", "look", "format", "preset"];
+const TEXT_PARAMS: &[&str] = &["dir", "path", "look", "format", "preset", "text", "language", "model", "name", "fit"];
 
 fn parse_steps(tokens: &[String]) -> Result<Vec<Step>, String> {
     let mut steps: Vec<Step> = Vec::new();
@@ -617,13 +634,26 @@ fn run(args: &[String]) -> Result<(), String> {
         return Err(format!("{e} ({dir})"));
     }
     let mut b = BrBackend::new(Headless::new(session), "br run");
+    // videos, sound and subtitles go into the video, the rest into the photo library
+    let (video_imports, imports): (Vec<String>, Vec<String>) = imports.into_iter().partition(|f| br_video::is_video_file(f));
     if !imports.is_empty() {
         import_and_select(&mut b.inner.session, &imports)?;
+    }
+    let mut video = br_video::Session::default();
+    if !video_imports.is_empty() {
+        br_video::execute(&mut video, "br.video.add", &json!({"paths": video_imports}))?;
     }
     let mut failed = false;
     for step in steps {
         let t = std::time::Instant::now();
-        let r = b.call("engine.execute", json!({"command": step.id, "params": step.params}));
+        let r = if br_video::is_video(&step.id) {
+            br_video::execute(&mut video, &step.id, &step.params)
+        } else if let Some(id) = step.id.strip_prefix("film.") {
+            // any of FilmCraft's commands, on the video
+            br_video::execute(&mut video, id, &step.params)
+        } else {
+            b.call("engine.execute", json!({"command": step.id, "params": step.params}))
+        };
         let ms = t.elapsed().as_millis();
         match r {
             Ok(v) => outln(json!({"command": step.id, "ok": true, "result": v, "ms": ms}))?,
@@ -637,6 +667,32 @@ fn run(args: &[String]) -> Result<(), String> {
         }
     }
     if failed { Err("a command failed".into()) } else { Ok(()) }
+}
+
+/// `br commands`: BR's photo and video commands; `--film` lists FilmCraft's.
+fn list_commands(args: &[String]) -> Result<(), String> {
+    match args.first().map(String::as_str) {
+        None => {}
+        Some("--film") => {
+            for c in filmcraft_engine::command_specs() {
+                outln(format!("film.{:<34} {}\n    {}", c.id, c.label, c.params))?;
+            }
+            return Ok(());
+        }
+        Some(other) => return Err(format!("unknown option `{other}` (br commands [--film])")),
+    }
+    outln("Foto (LightCraft):")?;
+    for (id, label, params) in commands::COMMANDS {
+        outln(format!("  {id:<20} {label}\n  {:<20} {params}", ""))?;
+    }
+    outln("\nVideo (FilmCraft):")?;
+    for c in br_video::COMMANDS {
+        outln(format!("  {:<20} {}\n  {:<20} {}", c.id, c.summary, "", c.params))?;
+    }
+    outln(format!(
+        "\nAnd every one of FilmCraft's {} commands as film.<id> (br commands --film), every one of\nLightCraft's by its id (develop.set, library.select, …).",
+        filmcraft_engine::command_specs().len()
+    ))
 }
 
 fn snapshot(args: &[String]) -> Result<(), String> {
@@ -681,18 +737,25 @@ fn snapshot(args: &[String]) -> Result<(), String> {
     }
     let mut app = br_ui::BrApp::new(session, lib);
     app.lc.ui.settings.gpu = false;
-    if !opts.files.is_empty() {
-        import_and_select(&mut app.lc.session, &opts.files)?;
+    let (videos, photos): (Vec<String>, Vec<String>) = opts.files.iter().cloned().partition(|f| br_video::is_video_file(f));
+    if !photos.is_empty() {
+        import_and_select(&mut app.lc.session, &photos)?;
     }
-    // the photo tools are on the Foto page, and so are photos given here
-    let photos = popover.is_some() || !opts.files.is_empty();
+    let mut d = br_ui::headless::Driver::new(size, scale);
+    if !videos.is_empty() {
+        br_ui::cut::open_files(&mut app, &d.view.ctx.clone(), videos.clone());
+        if let Some((text, _)) = app.fc.toast.take().filter(|_| app.fc.session.active_sequence().is_none()) {
+            return Err(text);
+        }
+    }
+    // the photo tools are on the Foto page, and so are photos given here (without videos)
+    let photos = popover.is_some() || (!photos.is_empty() && videos.is_empty());
     match page {
         Some(p) if popover.is_some() && p != br_ui::Page::Foto => return Err("--popover is a tool of the foto page".into()),
         Some(p) => app.open(p),
         None if photos => app.open(br_ui::Page::Foto),
         None => {}
     }
-    let mut d = br_ui::headless::Driver::new(size, scale);
     d.settle(&mut app, Duration::from_secs(120));
     if let Some(p) = popover {
         // open it the way a click does: under its button in the header

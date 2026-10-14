@@ -13,6 +13,7 @@
 //! (FilmCraft's, owned by the `FilmcraftApp`). Both apps' `logic()` runs every frame on every
 //! page (rendering, importing, saving go on); only the app on the page gets keyboard shortcuts.
 
+pub mod cut;
 pub mod desktop;
 pub mod headless;
 pub mod photo;
@@ -26,6 +27,7 @@ use filmcraft_ui_egui::FilmcraftApp;
 use lightcraft_engine::Session;
 use lightcraft_ui_egui::{LightcraftApp, Services};
 
+pub use cut::CutState;
 pub use photo::{PhotoState, Popover};
 pub use video::VideoState;
 
@@ -104,6 +106,8 @@ pub struct BrApp {
     pub photo: PhotoState,
     /// The video pages' layouts.
     pub video: VideoState,
+    /// The video pages' quick tools.
+    pub cut: CutState,
     /// Every font family the apps draw with was bound at the start of this frame.
     fonts_ok: bool,
     /// Screen rectangles of BR's controls from the last frame, by name (`page.foto`,
@@ -130,15 +134,16 @@ fn is_shortcut_event(e: &egui::Event) -> bool {
     matches!(e, egui::Event::Key { .. } | egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_))
 }
 
-/// Run `f` with the frame's keyboard shortcuts hidden (for an app that is not on the page).
-fn without_shortcuts(ctx: &egui::Context, f: impl FnOnce(&egui::Context)) {
+/// Run `f` for an app that is not on the page: the frame's keyboard shortcuts and dropped files
+/// are hidden from it (they belong to the app the user sees).
+fn without_page_input(ctx: &egui::Context, f: impl FnOnce(&egui::Context)) {
     let saved = ctx.input_mut(|i| {
-        let saved = i.events.clone();
+        let saved = (i.events.clone(), std::mem::take(&mut i.raw.dropped_files), std::mem::take(&mut i.raw.hovered_files));
         i.events.retain(|e| !is_shortcut_event(e));
         saved
     });
     f(ctx);
-    ctx.input_mut(|i| i.events = saved);
+    ctx.input_mut(|i| (i.events, i.raw.dropped_files, i.raw.hovered_files) = saved);
 }
 
 impl BrApp {
@@ -162,6 +167,7 @@ impl BrApp {
             page: Page::Schnitt,
             photo: PhotoState::default(),
             video: VideoState::default(),
+            cut: CutState::default(),
             fonts_ok: false,
             widgets: HashMap::new(),
             library,
@@ -185,6 +191,7 @@ impl BrApp {
         }
         photo::finish_drags(self);
         self.photo.open = None;
+        self.cut.open = None;
         if page.is_video() {
             video::show_page(&mut self.fc, &mut self.video, page);
         } else {
@@ -199,7 +206,7 @@ impl BrApp {
         if self.page == Page::Foto {
             self.lc.logic(ctx);
         } else {
-            without_shortcuts(ctx, |ctx| self.lc.logic(ctx));
+            without_page_input(ctx, |ctx| self.lc.logic(ctx));
         }
         video::logic(&mut self.fc, &mut self.video, ctx);
         self.fonts_ok = video::fonts_ready(ctx);
@@ -217,18 +224,44 @@ impl BrApp {
         }
     }
 
-    /// Before each frame: input the apps' control channels inject.
+    /// Before each frame: input the apps' control channels inject, and files dropped where BR
+    /// takes them itself.
     pub fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         self.lc.raw_input_hook(raw);
         video::raw_input_hook(&mut self.fc, ctx, raw);
+        self.route_drops(ctx, raw);
+    }
+
+    /// Dropped files: on the start screen they make the video (instead of only landing in the
+    /// project); on the Foto page, videos go to the Schnitt page (photos stay with LightCraft).
+    fn route_drops(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if raw.dropped_files.is_empty() {
+            return;
+        }
+        let path = |f: &egui::DroppedFileHandle| Some(f.path().to_string_lossy().into_owned()).filter(|p| !p.is_empty());
+        if cut::start_screen_visible(self) {
+            let paths: Vec<String> = std::mem::take(&mut raw.dropped_files).iter().filter_map(path).collect();
+            cut::add_paths(self, ctx, paths);
+        } else if self.page == Page::Foto {
+            let (videos, photos): (Vec<_>, Vec<_>) =
+                std::mem::take(&mut raw.dropped_files).into_iter().partition(|f| path(f).is_some_and(|p| br_video::is_video_file(&p)));
+            raw.dropped_files = photos;
+            if !videos.is_empty() {
+                cut::add_paths(self, ctx, videos.iter().filter_map(path).collect());
+                if raw.dropped_files.is_empty() {
+                    self.open(Page::Schnitt);
+                }
+            }
+        }
     }
 
     /// Draw the window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         self.widgets.clear();
         let ctx = ui.ctx().clone();
-        // an export finishes whichever page is showing
+        // an export (and a caption recognition) finishes whichever page is showing
         photo::poll_export(self, &ctx);
+        cut::poll(self, &ctx);
         self.header(ui);
         match self.page {
             Page::Foto => {
@@ -239,7 +272,14 @@ impl BrApp {
                 // the fonts were just completed: FilmCraft draws from the next frame on
                 egui::CentralPanel::default().show(ui, |_| {});
             }
-            _ => video::ui(&mut self.fc, &mut self.video, ui),
+            _ => {
+                if self.page == Page::Schnitt {
+                    cut::toolbar(self, ui);
+                }
+                let area = video::ui(&mut self.fc, &mut self.video, ui);
+                cut::set_area(self, area);
+                cut::show(self, &ctx);
+            }
         }
     }
 
@@ -264,6 +304,8 @@ impl BrApp {
                         ui.spacing_mut().item_spacing.x = 8.0;
                         if self.page == Page::Foto {
                             photo::header_tools(self, ui, &t);
+                        } else if self.fonts_ok {
+                            cut::header_tools(self, ui, &t);
                         }
                         if let Some(lib) = &self.library {
                             ui.add_space(6.0);
@@ -278,7 +320,7 @@ impl BrApp {
     /// Something is still being worked on (renders, an import or export): keep drawing frames.
     pub fn busy(&self) -> bool {
         let lc = &self.lc;
-        lc.renderer.in_flight() > 0 || lc.import.is_some() || lc.export.is_some() || !lc.tasks.is_empty() || self.photo.exporting()
+        lc.renderer.in_flight() > 0 || lc.import.is_some() || lc.export.is_some() || !lc.tasks.is_empty() || self.photo.exporting() || self.cut.busy()
     }
 
     /// Everything closing the window does short of stopping LightCraft's workers: end a drag,

@@ -32,6 +32,8 @@ arboard = { workspace = true }
 [features]
 # sound for video playback through the system's audio device (cpal: ALSA on Linux)
 audio = ["dep:cpal"]
+# automatic captions (Whisper on the CPU, the model downloaded on first use)
+whisper = ["br-video/whisper"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { workspace = true }

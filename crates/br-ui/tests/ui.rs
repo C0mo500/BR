@@ -323,3 +323,174 @@ fn a_page_keeps_the_layout_it_was_left_with() {
     // the same panels in the same places (FilmCraft may bring another tab of a group to the front)
     assert_eq!(panels(&app.fc.ui.dock), panels(&changed), "Schnitt got its changed layout back");
 }
+
+fn have_ffmpeg() -> bool {
+    std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
+}
+
+/// A short phone-style clip (with sound) written by ffmpeg.
+fn clip(dir: &std::path::Path, name: &str, size: &str, seconds: u32) -> std::path::PathBuf {
+    let path = dir.join(name);
+    let o = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i"])
+        .arg(format!("testsrc2=size={size}:rate=30:duration={seconds}"))
+        .args(["-f", "lavfi", "-i"])
+        .arg(format!("sine=frequency=440:duration={seconds}"))
+        .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    path
+}
+
+fn temp(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("br-ui-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+fn seq_size(app: &BrApp) -> Option<(u32, u32)> {
+    app.fc.session.active_sequence().map(|q| (q.settings.width, q.settings.height))
+}
+
+#[test]
+fn an_empty_project_starts_on_capcuts_start_screen_and_a_format_tile_makes_the_video() {
+    let (mut app, mut d) = video_app();
+    assert!(br_ui::cut::start_screen_visible(&app));
+    let texts = d.texts();
+    for t in ["Neues Video", "9:16", "16:9", "1:1", "4:5", "Projekt öffnen…", "Beispielprojekt"] {
+        assert!(texts.iter().any(|x| x.contains(t)), "`{t}` not on the start screen: {texts:?}");
+    }
+    snapshot(&d, "start");
+    let undo = app.fc.session.history.undo.len();
+    d.click(&mut app, "start.9:16").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(seq_size(&app), Some((1080, 1920)), "a vertical video");
+    assert_eq!(app.fc.session.history.undo.len(), undo + 1);
+    assert!(!br_ui::cut::start_screen_visible(&app), "the editor takes over");
+    // undo brings the start back; "Ohne Video weiter" leaves it for good
+    d.click(&mut app, "cut.undo").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    assert!(app.fc.session.active_sequence().is_none());
+    assert!(br_ui::cut::start_screen_visible(&app));
+    d.click(&mut app, "start.skip").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    assert!(!br_ui::cut::start_screen_visible(&app));
+    assert!(app.fc.ui_error.is_none(), "{:?}", app.fc.ui_error);
+}
+
+#[test]
+fn files_dropped_on_the_start_screen_become_the_video_and_videos_dropped_on_foto_go_to_schnitt() {
+    if !have_ffmpeg() {
+        eprintln!("ffmpeg missing: skipped");
+        return;
+    }
+    let dir = temp("drops");
+    let a = clip(&dir, "a.mp4", "1080x1920", 2);
+    let b = clip(&dir, "b.mov", "1080x1920", 1);
+    let (mut app, mut d) = video_app();
+    let photos = app.lc.session.visible_cloned().len();
+    d.drop_files(&mut app, std::slice::from_ref(&a));
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(seq_size(&app), Some((1080, 1920)), "the first clip's shape");
+    assert_eq!(app.lc.session.visible_cloned().len(), photos, "LightCraft did not import the drop");
+    // on the Foto page a video goes to the Schnitt page, at the end of the video
+    app.open(Page::Foto);
+    assert!(d.settle(&mut app, SETTLE));
+    d.drop_files(&mut app, std::slice::from_ref(&b));
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(app.page, Page::Schnitt);
+    let st = br_video::state(&mut app.fc.session).unwrap();
+    assert_eq!(st["videoClips"], 2, "{st}");
+    assert!((st["seconds"].as_f64().unwrap() - 3.0).abs() < 0.2, "{st}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_tool_row_cuts_speeds_filters_and_reshapes_the_video() {
+    if !have_ffmpeg() {
+        eprintln!("ffmpeg missing: skipped");
+        return;
+    }
+    let dir = temp("tools");
+    let a = clip(&dir, "a.mp4", "1080x1920", 3);
+    let b = clip(&dir, "b.mp4", "1080x1920", 2);
+    let (mut app, mut d) = video_app();
+    br_video::execute(&mut app.fc.session, "br.video.add", &serde_json::json!({"paths": [a, b]})).unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    for key in ["add", "text", "captions", "music", "filter", "transition", "split", "delete", "speed", "detach", "undo", "redo"] {
+        assert!(app.widgets.contains_key(&format!("cut.{key}")), "tool `{key}` missing");
+    }
+    snapshot(&d, "schnitt-tools");
+
+    // split at the playhead: one clip more, one undo step
+    br_video::execute(&mut app.fc.session, "playhead.set", &serde_json::json!({"seconds": 1.0})).unwrap();
+    let clips = |app: &mut BrApp| br_video::state(&mut app.fc.session).unwrap()["videoClips"].as_u64().unwrap();
+    let n = clips(&mut app);
+    d.click(&mut app, "cut.split").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(clips(&mut app), n + 1);
+
+    // select the first clip: Tempo 2× halves it, Löschen closes the gap
+    let first = app.fc.session.active_sequence().unwrap().video_tracks[0].items[0].id;
+    app.fc.session.state.selection = vec![first];
+    d.click(&mut app, "cut.speed").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(app.cut.popover(), Some(br_ui::cut::Popover::Speed));
+    let before = br_video::state(&mut app.fc.session).unwrap()["seconds"].as_f64().unwrap();
+    d.click(&mut app, "speed.2").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    let after = br_video::state(&mut app.fc.session).unwrap()["seconds"].as_f64().unwrap();
+    assert!((before - after - 0.5).abs() < 0.1, "1 s at 2× is 0.5 s: {before} → {after}");
+    snapshot(&d, "schnitt-speed");
+
+    // a filter on the selection
+    d.click(&mut app, "cut.filter").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    d.click(&mut app, "filter.Golden Dusk").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    let fx = &app.fc.session.active_sequence().unwrap().find_item(first).unwrap().1.effects;
+    assert!(fx.iter().any(|e| e.effect == "lumetri"), "{fx:?}");
+
+    // the video's format, from the header
+    d.click(&mut app, "video.format").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    d.click(&mut app, "vformat.1:1").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(seq_size(&app), Some((1080, 1080)));
+
+    // undo through the row takes the format back
+    d.click(&mut app, "cut.undo").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(seq_size(&app), Some((1080, 1920)));
+    assert!(app.fc.ui_error.is_none(), "{:?}", app.fc.ui_error);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_export_popover_writes_the_video_in_the_background() {
+    if !have_ffmpeg() {
+        eprintln!("ffmpeg missing: skipped");
+        return;
+    }
+    let dir = temp("export");
+    let a = clip(&dir, "a.mp4", "640x360", 2);
+    let (mut app, mut d) = video_app();
+    br_video::execute(&mut app.fc.session, "br.video.add", &serde_json::json!({"paths": [a]})).unwrap();
+    app.cut.export_dir = dir.join("out");
+    assert!(d.settle(&mut app, SETTLE));
+    d.click(&mut app, "video.export").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(app.cut.popover(), Some(br_ui::cut::Popover::Export));
+    snapshot(&d, "video-export");
+    d.click(&mut app, "vexport.go").unwrap();
+    // settle waits for the export (the app is busy while it runs)
+    assert!(d.settle(&mut app, Duration::from_secs(300)));
+    assert!(!app.cut.exporting());
+    let out = app.cut.last_export.clone().expect("the export finished");
+    assert_eq!(out.parent(), Some(dir.join("out").as_path()));
+    assert!(std::fs::metadata(&out).unwrap().len() > 1000, "{}", out.display());
+    let _ = std::fs::remove_dir_all(&dir);
+}

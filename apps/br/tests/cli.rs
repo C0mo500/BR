@@ -246,3 +246,79 @@ fn only_the_window_keeps_settings_and_a_log() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn have_ffmpeg() -> bool {
+    Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
+}
+
+fn phone_clip(path: &std::path::Path, seconds: u32) {
+    let o = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i"])
+        .arg(format!("testsrc2=size=1080x1920:rate=30:duration={seconds}"))
+        .args(["-f", "lavfi", "-i"])
+        .arg(format!("sine=frequency=440:duration={seconds}"))
+        .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"])
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+#[test]
+fn run_edits_a_video_with_brs_and_filmcrafts_commands() {
+    if !have_ffmpeg() {
+        eprintln!("ffmpeg missing: skipped");
+        return;
+    }
+    let dir = temp("video");
+    let clip = dir.join("IMG_0001.mp4");
+    phone_clip(&clip, 3);
+    let out = dir.join("reel.mp4");
+    let o = br()
+        .arg("run")
+        .arg("--import")
+        .arg(&clip)
+        .args([
+            "br.video.split",
+            "seconds=1",
+            "film.sequence.inspect",
+            "br.video.text",
+            "text=Hallo",
+            "br.video.export",
+            "preset=social",
+            "wait=true",
+        ])
+        .arg(format!("path={}", out.display()))
+        .arg("br.video.state")
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    let l = lines(&o.stdout);
+    assert_eq!(l.len(), 5, "{l:?}");
+    assert!(l.iter().all(|x| x["ok"] == true), "{l:?}");
+    assert_eq!(l[1]["result"]["video"][0]["items"].as_array().map(Vec::len), Some(2), "split in two: {}", l[1]);
+    assert_eq!(l[4]["result"]["format"], "9:16");
+    assert!(std::fs::metadata(&out).unwrap().len() > 1000);
+
+    // the window's snapshot with that clip opens the Schnitt page on it
+    let shot = dir.join("schnitt.png");
+    let o = br().arg("snapshot").arg(&clip).args(["--size", "1000x700", "-o"]).arg(&shot).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(std::fs::metadata(&shot).unwrap().len() > 10_000);
+    let o = br().args(["snapshot", "/nowhere/gone.mp4"]).output().unwrap();
+    assert!(!o.status.success(), "a video that is not there is an error");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn commands_lists_photo_video_and_filmcrafts() {
+    let o = br().arg("commands").output().unwrap();
+    assert!(o.status.success());
+    let text = String::from_utf8_lossy(&o.stdout);
+    for c in ["br.look", "br.video.add", "br.video.autoCaptions", "br.video.format", "film.<id>"] {
+        assert!(text.contains(c), "{c} missing:\n{text}");
+    }
+    let o = br().args(["commands", "--film"]).output().unwrap();
+    let text = String::from_utf8_lossy(&o.stdout);
+    assert!(text.contains("film.timeline.place") && text.contains("film.export.quick"), "{text}");
+}

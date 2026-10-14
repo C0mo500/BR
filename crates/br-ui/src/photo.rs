@@ -452,7 +452,7 @@ fn export_panel(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
         }
     }
     ui.add_space(6.0);
-    ui.label(RichText::new("Mehr Formate, Wasserzeichen und Stapel-Export: Datei ▸ Exportieren in LightCraft.").size(12.0).color(t.dim));
+    ui.label(RichText::new("Mehr Formate, Wasserzeichen und Stapel-Export: Datei › Exportieren in LightCraft.").size(12.0).color(t.dim));
 }
 
 fn poll_pick(app: &mut BrApp) {

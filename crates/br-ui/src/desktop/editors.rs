@@ -1,5 +1,5 @@
-//! Starting external editors for Photo ▸ Edit In: PhotoCraft, found where its installers put it,
-//! or any other application the user named in Settings ▸ External Editing.
+//! Starting external editors for Photo › Edit In: PhotoCraft, found where its installers put it,
+//! or any other application the user named in Settings › External Editing.
 //!
 //! Ported from LightCraft's desktop app (`apps/lightcraft/src/editors.rs`, MIT OR Apache-2.0).
 
@@ -24,7 +24,7 @@ enum Launcher {
     Flatpak,
 }
 
-/// Whether `app` can be started (Settings ▸ External Editing names it; "" = the system default):
+/// Whether `app` can be started (Settings › External Editing names it; "" = the system default):
 /// for PhotoCraft, that it is installed. The error says what to do instead.
 pub fn check(app: &str) -> Result<(), String> {
     launcher(app).map(|_| ())
@@ -114,7 +114,7 @@ fn launcher(app: &str) -> Result<Launcher, String> {
         return Ok(if cfg!(target_os = "macos") { Launcher::MacApp(app.to_string()) } else { Launcher::Program(PathBuf::from(app)) });
     }
     find_photocraft().ok_or_else(|| {
-        "PhotoCraft isn't installed. Get it from getartcraft.com/apps/photocraft, or give where it is in Settings ▸ External Editing.".to_string()
+        "PhotoCraft isn't installed. Get it from getartcraft.com/apps/photocraft, or give where it is in Settings › External Editing.".to_string()
     })
 }
 

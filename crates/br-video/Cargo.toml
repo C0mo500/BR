@@ -8,10 +8,18 @@ rust-version.workspace = true
 
 [dependencies]
 filmcraft-engine = { workspace = true }
+filmcraft-media = { workspace = true }
 filmcraft-project = { workspace = true }
+filmcraft-render = { workspace = true }
+filmcraft-speech = { workspace = true }
 filmcraft-time = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
+
+[features]
+# Automatic captions: Whisper on the CPU (FilmCraft's speech crate, pure Rust) and the model
+# download (once, into FilmCraft's data folder).
+whisper = ["filmcraft-engine/whisper", "filmcraft-engine/speech-download", "filmcraft-speech/whisper", "filmcraft-speech/download"]
 
 [lints]
 workspace = true

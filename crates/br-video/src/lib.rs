@@ -12,14 +12,19 @@
 //! | `br.video.detachAudio` | separate picture and sound of the selected clips |
 //! | `br.video.text` | a title at the playhead |
 //! | `br.video.captions` | captions from an SRT/VTT/… file |
+//! | `br.video.autoCaptions` | captions from the speech in the video (Whisper, see [`speech`]) |
 //! | `br.video.music` | a music file on its own track, as long as the video, lowered under speech |
-//! | `br.video.filter` | a Lumetri look on the selected clips |
+//! | `br.video.filter` | a look on the selected clips (all without a selection), replacing the last |
+//! | `br.video.format` | another shape (9:16, 16:9, 1:1, 4:5); the clips fit or fill it |
+//! | `br.video.transition` | the default transition (a dissolve) at the cuts of the selected clips |
 //! | `br.video.export` | an MP4 in a preset for TikTok/Reels/Shorts, YouTube, … |
 //! | `br.video.state` | the video at a glance |
 
 use serde_json::{Value, json};
 
 pub use filmcraft_engine::Session;
+
+pub mod speech;
 
 /// A video's shape.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,6 +96,8 @@ pub struct ExportPreset {
     pub detail: &'static str,
     /// FilmCraft's preset.
     pub filmcraft: &'static str,
+    /// The file's extension.
+    pub ext: &'static str,
 }
 
 pub const EXPORT_PRESETS: [ExportPreset; 5] = [
@@ -99,16 +106,24 @@ pub const EXPORT_PRESETS: [ExportPreset; 5] = [
         label: "Wie das Video",
         detail: "MP4 (H.264) in Größe und Bildrate des Videos",
         filmcraft: "Match Source – Adaptive High Bitrate",
+        ext: "mp4",
     },
     ExportPreset {
         key: "social",
         label: "TikTok, Reels, Shorts",
         detail: "MP4 9:16, 1080 × 1920, füllend skaliert",
         filmcraft: "Social Vertical 1080×1920",
+        ext: "mp4",
     },
-    ExportPreset { key: "youtube", label: "YouTube 1080p", detail: "MP4 16:9, 1920 × 1080", filmcraft: "YouTube 1080p Full HD" },
-    ExportPreset { key: "youtube4k", label: "YouTube 4K", detail: "MP4 16:9, 3840 × 2160", filmcraft: "YouTube 2160p 4K Ultra HD" },
-    ExportPreset { key: "prores", label: "Master (ProRes 422 HQ)", detail: "MOV für die Weiterbearbeitung", filmcraft: "Apple ProRes 422 HQ" },
+    ExportPreset { key: "youtube", label: "YouTube 1080p", detail: "MP4 16:9, 1920 × 1080", filmcraft: "YouTube 1080p Full HD", ext: "mp4" },
+    ExportPreset { key: "youtube4k", label: "YouTube 4K", detail: "MP4 16:9, 3840 × 2160", filmcraft: "YouTube 2160p 4K Ultra HD", ext: "mp4" },
+    ExportPreset {
+        key: "prores",
+        label: "Master (ProRes 422 HQ)",
+        detail: "MOV für die Weiterbearbeitung",
+        filmcraft: "Apple ProRes 422 HQ",
+        ext: "mov",
+    },
 ];
 
 pub fn export_preset(key: &str) -> Option<&'static ExportPreset> {
@@ -150,16 +165,101 @@ pub const COMMANDS: &[CommandInfo] = &[
     },
     CommandInfo {
         id: "br.video.filter",
-        params: r#"{"preset":str,"clips":[id]?}"#,
-        summary: "A Lumetri look (see lumetri.presets) on the selected clips",
+        params: r#"{"preset":str|"none","clips":[id]?}"#,
+        summary: "A look (see lumetri.presets) on the selected clips, all without a selection; replaces the look applied before",
     },
     CommandInfo {
         id: "br.video.export",
         params: r#"{"preset":"video|social|youtube|youtube4k|prores"="video","path":str?,"wait":bool=false}"#,
         summary: "Export the video (MP4 unless ProRes); `wait` blocks until written",
     },
+    CommandInfo {
+        id: "br.video.autoCaptions",
+        params: r#"{"language":"de|en|…|auto"?,"model":"whisper-tiny|whisper-base|whisper-small"?}"#,
+        summary: "Captions from the speech in the video (Whisper; the model is downloaded the first time)",
+    },
+    CommandInfo {
+        id: "br.video.format",
+        params: r#"{"format":"9:16|16:9|1:1|4:5","fit":"fit|fill"=fit}"#,
+        summary: "Change the video's shape; its clips fit into it (or fill it)",
+    },
+    CommandInfo {
+        id: "br.video.transition",
+        params: r#"{"clips":[id]?}"#,
+        summary: "A dissolve at the cuts between the selected clips (every cut of the main track without a selection)",
+    },
     CommandInfo { id: "br.video.state", params: "{}", summary: "The video at a glance: format, length, clips, playhead" },
 ];
+
+/// Where videos are exported: `$BR_EXPORTS` (as photos; a hosted BR serves that folder), else
+/// the system's videos folder ▸ BR Exports.
+pub fn export_dir() -> std::path::PathBuf {
+    if let Some(d) = std::env::var_os("BR_EXPORTS").filter(|d| !d.is_empty()) {
+        return d.into();
+    }
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    home.join(if cfg!(target_os = "macos") { "Movies" } else { "Videos" }).join("BR Exports")
+}
+
+/// A file in `dir` named after the video that is not there yet: `Video.mp4`, `Video 2.mp4`, …
+pub fn export_path(dir: &std::path::Path, name: &str, preset: &ExportPreset) -> std::path::PathBuf {
+    let clean: String = name.chars().map(|c| if c.is_control() || "/\\:*?\"<>|".contains(c) { '_' } else { c }).collect();
+    let stem = match clean.trim().trim_matches('.') {
+        "" => "Video",
+        s => s,
+    };
+    (1..)
+        .map(|n| dir.join(if n == 1 { format!("{stem}.{}", preset.ext) } else { format!("{stem} {n}.{}", preset.ext) }))
+        .find(|p| !p.exists())
+        .unwrap_or_else(|| dir.join(format!("{stem}.{}", preset.ext)))
+}
+
+/// What the media picker offers: video, sound and still images.
+pub fn media_extensions() -> Vec<&'static str> {
+    filmcraft_media::VIDEO_EXTENSIONS.iter().chain(filmcraft_media::AUDIO_EXTENSIONS).chain(filmcraft_media::STILL_EXTENSIONS).copied().collect()
+}
+
+/// Sound files (music).
+pub fn audio_extensions() -> &'static [&'static str] {
+    filmcraft_media::AUDIO_EXTENSIONS
+}
+
+/// What kind of file FilmCraft makes of `path`, by its name: `video`, `audio`, `image`,
+/// `project` (`.fcproj`, EDL, XML, FCPXML, OTIO) or `caption` (SRT, VTT, SCC).
+pub fn file_kind(path: &str) -> Option<&'static str> {
+    let name = std::path::Path::new(path).file_name().map_or(path.into(), |n| n.to_string_lossy());
+    filmcraft_engine::media_browser::kind_of(&name)
+}
+
+/// Files that belong on the video pages rather than in the photo library: video, sound, video
+/// projects and subtitle files.
+pub fn is_video_file(path: &str) -> bool {
+    matches!(file_kind(path), Some("video" | "audio" | "project" | "caption"))
+}
+
+/// The project holds nothing yet: no media, no sequence (the start screen's moment).
+pub fn is_empty(s: &Session) -> bool {
+    s.project.items.values().all(|i| !matches!(i.kind, filmcraft_project::ItemKind::Media(_) | filmcraft_project::ItemKind::Sequence(_)))
+}
+
+/// The clips selected in the timeline.
+pub fn selection(s: &Session) -> usize {
+    s.state.selection.len()
+}
+
+/// The video clips of the active sequence that show media (not titles or graphics).
+fn media_video_clips(s: &Session, seq: &Value) -> Vec<u64> {
+    tracks(seq, "video")
+        .flat_map(items)
+        .filter(|c| {
+            c.get("item")
+                .and_then(Value::as_u64)
+                .and_then(|i| s.project.item(filmcraft_project::ItemId(i)))
+                .is_some_and(|i| matches!(i.kind, filmcraft_project::ItemKind::Media(_) | filmcraft_project::ItemKind::Subclip { .. }))
+        })
+        .filter_map(|c| c.get("clip").and_then(Value::as_u64))
+        .collect()
+}
 
 pub fn is_video(id: &str) -> bool {
     id.starts_with("br.video.")
@@ -345,19 +445,144 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
             state(s)
         }
         "br.video.filter" => {
-            let preset = str_param(id, p, "preset")?.to_string();
-            let mut q = clips_param(p);
-            q["name"] = json!(preset);
-            run(s, "lumetri.applyPreset", q)
+            // CapCut's filters replace each other: a look applied unchanged gives way to the new
+            // one; a grade changed by hand (or any other Lumetri) stays
+            let name = p.get("preset").and_then(Value::as_str).unwrap_or("");
+            let remove_only = name.is_empty() || name == "none";
+            if !remove_only && filmcraft_render::lumetri_presets::find(name).is_none() {
+                return Err(err(id, format!("unknown look `{name}` (see lumetri.presets)")));
+            }
+            if s.active_sequence().is_none() {
+                return Err(err(id, "no video yet"));
+            }
+            let clips: Vec<u64> = match p.get("clips") {
+                Some(Value::Array(a)) => a.iter().filter_map(Value::as_u64).collect(),
+                _ if !s.state.selection.is_empty() => s.state.selection.iter().map(|c| c.0).collect(),
+                _ => {
+                    let seq = inspect(s)?;
+                    media_video_clips(s, &seq)
+                }
+            };
+            if clips.is_empty() {
+                return Err(err(id, "no video clips"));
+            }
+            let looks: Vec<_> = filmcraft_render::lumetri_presets::presets().iter().map(|l| l.instance()).collect();
+            let label = if remove_only { "Filter entfernen".to_string() } else { format!("Filter {name}") };
+            s.edit_group(&label, |s| {
+                let ids: Vec<filmcraft_project::ClipId> = clips.iter().copied().map(filmcraft_project::ClipId).collect();
+                let removed = s.edit_sequence("Filter entfernen", |q, _, _| {
+                    let mut n = 0;
+                    for it in q.video_tracks.iter_mut().flat_map(|t| t.items.iter_mut()).filter(|it| ids.contains(&it.id)) {
+                        let before = it.effects.len();
+                        it.effects.retain(|e| !looks.contains(e));
+                        n += before - it.effects.len();
+                    }
+                    Ok(n)
+                })?;
+                if remove_only {
+                    return Ok(json!({"removed": removed}));
+                }
+                let mut r = s.execute("lumetri.applyPreset", json!({"name": name, "clips": clips}))?;
+                r["replaced"] = json!(removed);
+                Ok(r)
+            })
+            .map_err(|e| e.to_string())
+        }
+        "br.video.format" => {
+            let key = str_param(id, p, "format")?;
+            let format = Format::find(key).ok_or_else(|| err(id, format!("unknown format `{key}`: 9:16, 16:9, 1:1 or 4:5")))?;
+            let fill = match p.get("fit").and_then(Value::as_str) {
+                None | Some("fit") => false,
+                Some("fill") => true,
+                Some(other) => return Err(err(id, format!("`fit` is fit or fill, not `{other}`"))),
+            };
+            if s.active_sequence().is_none() {
+                return Err(err(id, "no video yet: br.video.new or br.video.add first"));
+            }
+            let (w, h) = format.size();
+            s.edit_group(&format!("Format {}", format.key()), |s| {
+                s.execute("sequence.settings", json!({"width": w, "height": h}))?;
+                let seq = s.execute("sequence.inspect", json!({}))?;
+                let clips = media_video_clips(s, &seq);
+                if !clips.is_empty() {
+                    s.execute(if fill { "clip.fillFrame" } else { "clip.fitToFrame" }, json!({"clips": clips}))?;
+                }
+                Ok(Value::Null)
+            })
+            .map_err(|e| e.to_string())?;
+            state(s)
+        }
+        "br.video.transition" => {
+            if s.active_sequence().is_none() {
+                return Err(err(id, "no video yet"));
+            }
+            let chosen: Vec<u64> = match p.get("clips") {
+                Some(Value::Array(a)) => a.iter().filter_map(Value::as_u64).collect(),
+                _ => s.state.selection.iter().map(|c| c.0).collect(),
+            };
+            // the cuts of the main track: where one clip ends and the next begins
+            let seq = inspect(s)?;
+            let mut main: Vec<(u64, i64, i64)> = main_track(&seq)
+                .into_iter()
+                .flat_map(items)
+                .filter_map(|c| Some((c.get("clip")?.as_u64()?, c.get("start")?.as_i64()?, c.get("end")?.as_i64()?)))
+                .collect();
+            main.sort_by_key(|c| c.1);
+            // a cut that has a transition keeps it
+            let has_one: Vec<u64> = main_track(&seq)
+                .and_then(|t| t.get("transitions"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|x| x.get("from").and_then(Value::as_u64))
+                .collect();
+            let cuts: Vec<u64> = main
+                .windows(2)
+                .filter(|w| w[0].2 == w[1].1 && (chosen.is_empty() || chosen.contains(&w[0].0) || chosen.contains(&w[1].0)))
+                .map(|w| w[0].0)
+                .filter(|a| !has_one.contains(a))
+                .collect();
+            if cuts.is_empty() {
+                return Err(err(id, "no cut between two clips without a transition there"));
+            }
+            let n = cuts.len();
+            s.edit_group("Übergänge", |s| {
+                for clip in cuts {
+                    s.execute("sequence.applyVideoTransition", json!({"clip": clip, "edge": "out"}))?;
+                }
+                Ok(())
+            })
+            .map_err(|e| e.to_string())?;
+            Ok(json!({"transitions": n}))
+        }
+        "br.video.autoCaptions" => {
+            let opts = speech::CaptionOptions {
+                language: p.get("language").and_then(Value::as_str).map(str::to_string),
+                model: p.get("model").and_then(Value::as_str).map(str::to_string),
+            };
+            let job = speech::start(s, &opts).map_err(|e| err(id, e))?;
+            let seq = job.sequence;
+            let done = job.wait().map_err(|e| err(id, e))?;
+            speech::apply(s, seq, done).map_err(|e| err(id, e))
         }
         "br.video.export" => {
             let key = p.get("preset").and_then(Value::as_str).unwrap_or("video");
             let preset = export_preset(key).ok_or_else(|| err(id, format!("unknown preset `{key}`: video, social, youtube, youtube4k or prores")))?;
-            let mut q = json!({"preset": preset.filmcraft, "wait": p.get("wait").and_then(Value::as_bool).unwrap_or(false)});
-            if let Some(path) = p.get("path").and_then(Value::as_str) {
-                q["path"] = json!(path);
+            if s.active_sequence().is_none() {
+                return Err(err(id, "no video yet"));
             }
-            run(s, "export.quick", q)
+            // no path: BR's export folder, named after the video
+            let path = match p.get("path").and_then(Value::as_str) {
+                Some(path) => std::path::PathBuf::from(path),
+                None => {
+                    let dir = export_dir();
+                    std::fs::create_dir_all(&dir).map_err(|e| err(id, format!("{}: {e}", dir.display())))?;
+                    let name = s.state.active_sequence.and_then(|q| s.project.item(q)).map(|i| i.name.clone()).unwrap_or_default();
+                    export_path(&dir, &name, preset)
+                }
+            };
+            let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(false);
+            run(s, "export.quick", json!({"preset": preset.filmcraft, "path": path.to_string_lossy(), "wait": wait}))
         }
         "br.video.state" => state(s),
         _ => Err(format!("unknown command `{id}`: see br.video.* in `br commands`")),
