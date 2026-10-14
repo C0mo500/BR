@@ -264,6 +264,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "br-mcp"
+version = "0.1.0"
+dependencies = [
+ "br-photo",
+ "lightcraft-engine",
+ "lightcraft-mcp",
+ "log",
+ "serde_json",
+]
+
+[[package]]
 name = "br-photo"
 version = "0.1.0"
 dependencies = [
@@ -1410,6 +1421,18 @@ dependencies = [
  "lightcraft-develop",
  "lightcraft-geom",
  "quick-xml",
+]
+
+[[package]]
+name = "lightcraft-mcp"
+version = "0.7.1"
+source = "git+https://github.com/storytold/lightcraft?rev=a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f#a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f"
+dependencies = [
+ "lightcraft-codecs",
+ "lightcraft-engine",
+ "lightcraft-raster",
+ "log",
+ "serde_json",
 ]
 
 [[package]]
