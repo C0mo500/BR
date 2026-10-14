@@ -31,9 +31,24 @@ pub fn activate(s: &mut Session, id: PhotoId) -> Result<()> {
     s.execute("library.select", &json!({"ids": [id.0], "active": id.0})).map(|_| ())
 }
 
-/// `id` param of a command, if present.
-pub fn id_param(p: &Value) -> Option<u64> {
-    p.get("id").and_then(Value::as_u64)
+/// `id` param of a command: absent or null means the active photo; anything else must be a photo
+/// id (a whole number), so a mistyped id never edits the wrong photo.
+pub fn id_param(cmd: &str, p: &Value) -> Result<Option<u64>> {
+    match p.get("id") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_u64().map(Some).ok_or_else(|| bad(cmd, format!("`id` must be a photo id (a whole number), got {v}"))),
+    }
+}
+
+/// A text param. Numbers and booleans are taken as their text (`dir=2024` on the command line);
+/// anything else is an error.
+pub fn text_param(cmd: &str, p: &Value, key: &str) -> Result<Option<String>> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(v @ (Value::Number(_) | Value::Bool(_))) => Ok(Some(v.to_string())),
+        Some(v) => Err(bad(cmd, format!("`{key}` must be text, got {v}"))),
+    }
 }
 
 /// The photo's pixel size after its orientation (rotation) is applied: the frame its crop lives in.

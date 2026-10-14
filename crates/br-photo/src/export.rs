@@ -14,7 +14,9 @@ use std::sync::Arc;
 
 use lightcraft_engine::Session;
 use lightcraft_engine::catalog::{Op, PhotoId};
+use lightcraft_engine::develop::DevelopSettings;
 use lightcraft_engine::export::{Destination, ExportOptions, PreparedExport, prepare_batch, run_batch, write_file};
+use lightcraft_engine::pipeline::geometry::Frame;
 use serde_json::{Value, json};
 
 use crate::crop::{self, Format};
@@ -160,19 +162,34 @@ impl Plan {
 }
 
 /// Settings photo `id` is exported with under `preset`, or `None` to export it as it is.
-pub fn export_settings(s: &Session, id: PhotoId, preset: Preset) -> Option<lightcraft_engine::develop::DevelopSettings> {
-    let format = preset.format()?;
-    let ratio = format.ratio()?;
-    let (w, h) = oriented_dims(s, id)?;
-    let d = s.develop_of(id)?;
+///
+/// The crop is the photo's own when it already has the preset's format, else the largest centred
+/// one; either way in whole pixels and the exact ratio. With Constrain Crop and a perspective or
+/// lens warp, LightCraft would shrink the crop by a fraction of a pixel at render time; the
+/// constrained crop is worked out here instead and snapped again, so the size stays exact.
+pub fn export_settings(s: &Session, id: PhotoId, preset: Preset) -> Result<Option<DevelopSettings>, String> {
+    let Some(format) = preset.format() else { return Ok(None) };
+    let Some((aw, ah)) = format.ratio() else { return Ok(None) };
+    let p = s.catalog.photo(id).ok_or_else(|| format!("no such photo {}", id.0))?;
+    let (w, h) = oriented_dims(s, id).ok_or_else(|| format!("no such photo {}", id.0))?;
+    let d = p.develop.clone();
     let mut out = (*d).clone();
-    out.crop.geometry = if crop::detect(&d, w, h) == Some(format) {
-        crop::snap(d.crop.geometry, w, h, ratio)
+    let mut g = if crop::detect(&d, w, h) == Some(format) {
+        d.crop.geometry
     } else {
-        crop::fit(w, h, d.crop.geometry.angle, format)
+        lightcraft_geom::crop_fit_angle(w, h, d.crop.geometry.angle, Some(aw as f64 / ah as f64))
     };
-    out.crop.aspect = Some((ratio.0 * 100, ratio.1 * 100));
-    Some(out)
+    let constrained = out.geometry.constrain_crop;
+    if constrained {
+        out.crop.geometry = g;
+        let info = s.source_info(id);
+        g = Frame::with_lens(p.width as usize, p.height as usize, &out, true, info.lens.as_ref()).crop;
+        out.geometry.constrain_crop = false;
+    }
+    let snapped = if constrained { crop::snap_within(g, w, h, (aw, ah)) } else { crop::snap(g, w, h, (aw, ah)) };
+    out.crop.geometry = snapped.ok_or_else(|| format!("the photo is too small for {} (it needs at least {aw} × {ah} pixels)", format.label()))?;
+    out.crop.aspect = Some((aw * 100, ah * 100));
+    Ok(Some(out))
 }
 
 /// Set up the export of photo `id` with `preset` to `target`. Cheap: no pixels are read yet.
@@ -184,13 +201,18 @@ pub fn prepare(s: &mut Session, id: PhotoId, preset: Preset, target: &Target) ->
     let dest = match target {
         Target::Dir(dir) => Destination { dir: dir.to_string_lossy().into_owned(), exact: None },
         Target::File(path) => {
+            let path = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+                Some("jpg" | "jpeg") => path.clone(),
+                None => path.with_extension("jpg"),
+                Some(other) => return Err(format!("{}: BR exports JPEG; use a .jpg or .jpeg file name (not .{other})", path.display())),
+            };
             let path = path.to_string_lossy().into_owned();
             s.check_write_target(&path)?;
             let dir = Path::new(&path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
             Destination { dir, exact: Some(path) }
         }
     };
-    let items = match export_settings(s, id, preset) {
+    let items = match export_settings(s, id, preset)? {
         None => prepare_batch(s, &[id], &opts)?,
         Some(temp) => {
             // the export's crop, only while LightCraft sets the export up
@@ -287,13 +309,54 @@ mod tests {
         let mut d = (*s.develop_of(id).unwrap()).clone();
         d.crop.geometry.rect = lightcraft_geom::Rect::new(0.0, 0.0, 400.4 / 1200.0, 500.5 / 800.0);
         s.set_develop(id, d, "test").unwrap();
-        let t = export_settings(&s, id, Preset::Instagram).unwrap();
+        let t = export_settings(&s, id, Preset::Instagram).unwrap().unwrap();
         let r = t.crop.geometry.rect_px(1200.0, 800.0);
         assert!((r.width() - 400.0).abs() < 1e-6 && (r.height() - 500.0).abs() < 1e-6, "{r:?}");
         assert!(r.x0 < 1.0, "kept at the left edge: {r:?}");
         let files = export(&mut s, id, Preset::Instagram, &Target::File(dir.join("exact name.jpg"))).unwrap();
         assert!(files[0]["path"].as_str().unwrap().ends_with("exact name.jpg"));
         assert_eq!(files[0]["height"], 1350);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn constrain_crop_with_a_perspective_fix_keeps_the_size_exact() {
+        lightcraft_engine::gpu::set_enabled(false);
+        let dir = temp_dir("constrain");
+        for ((w, h), vertical) in [((1600, 1067), 10.0), ((752, 1003), 25.0), ((752, 1003), -40.0), ((1003, 752), 25.0)] {
+            let (mut s, id) = session_with_jpeg(&dir, w, h);
+            let mut d = (*s.develop_of(id).unwrap()).clone();
+            assert!(lightcraft_engine::develop::controls::set(&mut d, "geometry.vertical", vertical));
+            d.geometry.constrain_crop = true;
+            s.set_develop(id, d, "test").unwrap();
+            for preset in [Preset::Instagram, Preset::Story, Preset::Wide] {
+                let f = &export(&mut s, id, preset, &Target::Dir(dir.clone())).unwrap()[0];
+                let (ew, eh) = preset.size().unwrap();
+                assert_eq!((f["width"].as_u64(), f["height"].as_u64()), (Some(ew as u64), Some(eh as u64)), "{preset:?} {w}x{h} v{vertical}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_photo_too_small_for_the_format_is_refused() {
+        let dir = temp_dir("tiny");
+        let (mut s, id) = session_with_jpeg(&dir, 12, 12);
+        let e = prepare(&mut s, id, Preset::Story, &Target::Dir(dir.clone())).err().unwrap();
+        assert!(e.contains("too small"), "{e}");
+        assert!(prepare(&mut s, id, Preset::Square, &Target::Dir(dir.clone())).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_exact_file_is_a_jpeg_file() {
+        lightcraft_engine::gpu::set_enabled(false);
+        let dir = temp_dir("names");
+        let (mut s, id) = session_with_jpeg(&dir, 400, 300);
+        let e = prepare(&mut s, id, Preset::Square, &Target::File(dir.join("out.png"))).err().unwrap();
+        assert!(e.contains(".jpg"), "{e}");
+        let files = export(&mut s, id, Preset::Square, &Target::File(dir.join("noext"))).unwrap();
+        assert!(files[0]["path"].as_str().unwrap().ends_with("noext.jpg"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

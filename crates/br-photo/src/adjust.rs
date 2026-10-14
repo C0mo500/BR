@@ -17,7 +17,9 @@
 //! undo step named after the slider.
 
 use lightcraft_engine::catalog::PhotoId;
-use lightcraft_engine::develop::{DevelopSettings, WbMode};
+use lightcraft_engine::develop::DevelopSettings;
+use lightcraft_engine::pipeline::SourceInfo;
+use lightcraft_engine::pipeline::local::effective_wb;
 use lightcraft_engine::{Result, Session};
 use serde_json::{Map, Value, json};
 
@@ -101,18 +103,17 @@ impl Slider {
         }
     }
 
-    /// The slider's value for `d`, read back from its first control.
-    pub fn read(self, d: &DevelopSettings, as_shot_temp: f64) -> f64 {
+    /// The slider's value for `d` on a photo with source info `info`, read back from its first
+    /// control. Wärme reads the white balance in effect (as LightCraft's Edit panel does), so a
+    /// look's relative white balance on a Kelvin raw shows what it really does.
+    pub fn read(self, d: &DevelopSettings, info: &SourceInfo) -> f64 {
         let v = match self {
             Slider::Light => d.light.exposure * 50.0,
             Slider::Contrast => d.light.contrast,
             Slider::Color => d.color.vibrance,
             Slider::Warmth => {
-                if d.wb.mode == WbMode::AsShot {
-                    0.0
-                } else {
-                    (1e6 / as_shot_temp.max(1000.0) - 1e6 / d.wb.temp.max(1000.0)) / MIRED_STEP
-                }
+                let (t, _) = effective_wb(info, d);
+                (1e6 / info.as_shot_temp.max(1000.0) - 1e6 / t.max(1000.0)) / MIRED_STEP
             }
             Slider::Sharpness => d.effects.texture / 0.6,
             Slider::Vignette => -d.vignette.amount,
@@ -135,8 +136,8 @@ pub fn values(s: &Session, id: PhotoId) -> Vec<(Slider, f64)> {
     let Some(d) = s.develop_of(id) else {
         return Vec::new();
     };
-    let t = as_shot_temp(s, id);
-    Slider::ALL.into_iter().map(|k| (k, k.read(&d, t))).collect()
+    let info = s.source_info(id);
+    Slider::ALL.into_iter().map(|k| (k, k.read(&d, &info))).collect()
 }
 
 /// [`values`] as a JSON object keyed by [`Slider::key`].
@@ -197,9 +198,10 @@ pub fn drag(s: &mut Session, id: PhotoId, slider: Slider, v: f64) -> Result<()> 
     s.execute("develop.set", &json!({ "values": values })).map(|_| ())
 }
 
-/// Finish a drag: commits it as one undo step.
+/// Finish a drag: commits it as one undo step, saved (and its XMP sidecar written, if the library
+/// writes them) before this returns.
 pub fn end(s: &mut Session) -> Result<()> {
-    if s.interaction.is_some() { s.end_interaction() } else { Ok(()) }
+    if s.interaction.is_some() { s.execute("develop.endInteraction", &json!({})).map(|_| ()) } else { Ok(()) }
 }
 
 /// LightCraft's Auto (exposure, contrast and tone from the photo's statistics) on `id`.
@@ -242,29 +244,55 @@ pub fn parse_changes(p: &Value) -> Result<Vec<(Slider, f64)>> {
 mod tests {
     use super::*;
 
+    /// A JPEG (relative white balance), and a raw edited in Kelvin.
+    fn infos() -> [SourceInfo; 2] {
+        [SourceInfo::default(), SourceInfo { raw: true, relative_wb: false, legacy_relative_wb: true, as_shot_temp: 5200.0, ..Default::default() }]
+    }
+
     #[test]
     fn every_slider_reads_back_what_it_writes() {
-        for t in [6500.0, 5200.0] {
+        for info in infos() {
             for k in Slider::ALL {
                 for v in [-100.0, -37.0, 0.0, 12.5, 100.0] {
                     let mut d = DevelopSettings::default();
-                    for (c, x) in k.controls(v, t) {
+                    // what develop.set does: the photo's own scale first, then the value, Custom
+                    lightcraft_engine::pipeline::local::normalize_wb(&mut d, &info);
+                    for (c, x) in k.controls(v, info.as_shot_temp) {
                         assert!(lightcraft_engine::develop::controls::set(&mut d, c, x), "{c}");
                     }
                     if k == Slider::Warmth {
-                        d.wb.mode = WbMode::Custom;
+                        d.wb.mode = lightcraft_engine::develop::WbMode::Custom;
                     }
-                    assert!((k.read(&d, t) - v).abs() < 0.051, "{k:?} {v} @ {t}: {}", k.read(&d, t));
+                    let r = k.read(&d, &info);
+                    assert!((r - v).abs() < 0.051, "{k:?} {v} @ {}: {r}", info.as_shot_temp);
                 }
             }
         }
     }
 
     #[test]
+    fn warmth_reads_what_a_looks_white_balance_does_on_a_kelvin_raw() {
+        let info = &infos()[1];
+        // a look writes 7200 K on LightCraft's relative scale (6500 = as shot)
+        let mut d = DevelopSettings::default();
+        d.wb.mode = lightcraft_engine::develop::WbMode::Custom;
+        d.wb.temp = 7200.0;
+        d.wb.scale = lightcraft_engine::develop::WbScale::Legacy;
+        let shows = Slider::Warmth.read(&d, info);
+        let (eff, _) = effective_wb(info, &d);
+        assert!(eff > 5200.0 && eff < 6500.0, "{eff}");
+        assert!((shows - (1e6 / 5200.0 - 1e6 / eff) / MIRED_STEP).abs() < 0.06, "{shows}");
+        // setting the slider to what it shows keeps the colour
+        let (c, x) = Slider::Warmth.controls(shows, info.as_shot_temp)[0];
+        assert_eq!(c, "wb.temp");
+        assert!((x - eff).abs() < 15.0, "{x} vs {eff}");
+    }
+
+    #[test]
     fn zero_is_neutral() {
         let d = DevelopSettings::default();
         for k in Slider::ALL {
-            assert_eq!(k.read(&d, 6500.0), 0.0, "{k:?}");
+            assert_eq!(k.read(&d, &SourceInfo::default()), 0.0, "{k:?}");
             for (c, x) in k.controls(0.0, 6500.0) {
                 let neutral = if c == "wb.temp" { 6500.0 } else { 0.0 };
                 assert!((x - neutral).abs() < 1e-9, "{c} = {x}");

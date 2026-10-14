@@ -15,7 +15,7 @@ use crate::adjust;
 use crate::crop::{self, Format};
 use crate::export::{self, Preset, Target};
 use crate::looks::{self, LookState};
-use crate::photo::{bad, id_param, oriented_dims, target};
+use crate::photo::{activate, bad, id_param, oriented_dims, target, text_param};
 
 /// State the `br.*` commands keep between calls: the look whose amount can still be changed.
 #[derive(Clone, Debug, Default)]
@@ -30,7 +30,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     (
         "br.look",
         "Apply Look (BR)",
-        "{look: id or name, amount?: 0..200 (percent, default 100; 0 takes it off), id?} — changing the amount of the latest look replaces it (one undo step)",
+        "{look: id or name, amount?: 0..200 (percent, default 100; 0 takes it off), id?} — replaces the photo's latest look if nothing was edited since (one undo step); after another edit it goes on top",
     ),
     (
         "br.adjust",
@@ -42,7 +42,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     (
         "br.export",
         "Export (BR)",
-        "{preset: instagram|story|square|wide|full, dir?: folder, path?: exact file, id?} — instagram 1080×1350, story 1080×1920, square 1080×1080, wide 1920×1080, full = full size; the photo's edit is not changed",
+        "{preset: instagram|story|square|wide|full, dir?: folder, path?: exact .jpg file, id?} — instagram 1080×1350, story 1080×1920, square 1080×1080, wide 1920×1080, full = full size; the photo's edit is not changed",
     ),
     ("br.reset", "Reset All (BR)", "{id?} — back to how the photo was imported (looks, sliders, format, Pro edits)"),
     ("br.undo", "Undo (BR)", "{}"),
@@ -75,10 +75,6 @@ pub fn list(s: &Session) -> Vec<Value> {
         .collect()
 }
 
-fn str_param<'a>(p: &'a Value, key: &str) -> Option<&'a str> {
-    p.get(key).and_then(Value::as_str)
-}
-
 /// The simple view of photo `id`.
 pub fn state(s: &Session, st: &BrState, id: lightcraft_engine::catalog::PhotoId) -> Value {
     let p = s.catalog.photo(id);
@@ -105,13 +101,14 @@ pub fn execute(s: &mut Session, st: &mut BrState, id: &str, p: &Value) -> Result
     let p = if p.is_null() { &json!({}) } else { p };
     match id {
         "br.state" => {
-            let photo = target(s, id, id_param(p))?;
+            let photo = target(s, id, id_param(id, p)?)?;
             Ok(state(s, st, photo))
         }
         "br.looks" => Ok(looks::list_json(s)),
         "br.look" => {
-            let photo = target(s, id, id_param(p))?;
-            let look = str_param(p, "look").ok_or_else(|| bad(id, "missing `look` (see br.looks)"))?;
+            let photo = target(s, id, id_param(id, p)?)?;
+            let look = text_param(id, p, "look")?.ok_or_else(|| bad(id, "missing `look` (see br.looks)"))?;
+            let look = look.as_str();
             let amount = match p.get("amount") {
                 None | Some(Value::Null) => looks::current(&st.look, s, photo)
                     .filter(|l| looks::find(s, look).is_some_and(|f| f.id == l.preset_id))
@@ -121,26 +118,28 @@ pub fn execute(s: &mut Session, st: &mut BrState, id: &str, p: &Value) -> Result
             looks::set_look(s, &mut st.look, photo, look, amount, false)
         }
         "br.adjust" => {
-            let photo = target(s, id, id_param(p))?;
+            let photo = target(s, id, id_param(id, p)?)?;
             let changes = adjust::parse_changes(p)?;
             adjust::set(s, photo, &changes)
         }
         "br.auto" => {
-            let photo = target(s, id, id_param(p))?;
+            let photo = target(s, id, id_param(id, p)?)?;
             adjust::auto(s, photo)
         }
         "br.crop" => {
-            let photo = target(s, id, id_param(p))?;
-            let f = str_param(p, "format").ok_or_else(|| bad(id, "missing `format`: original, 1:1, 4:5, 9:16 or 16:9"))?;
+            let photo = target(s, id, id_param(id, p)?)?;
+            let f = text_param(id, p, "format")?.ok_or_else(|| bad(id, "missing `format`: original, 1:1, 4:5, 9:16 or 16:9"))?;
+            let f = f.as_str();
             let f = Format::parse(f).ok_or_else(|| bad(id, format!("unknown format `{f}`: use original, 1:1, 4:5, 9:16 or 16:9")))?;
             crop::apply(s, photo, f)
         }
         "br.export" => {
-            let photo = target(s, id, id_param(p))?;
-            let name = str_param(p, "preset").unwrap_or("full");
+            let photo = target(s, id, id_param(id, p)?)?;
+            let name = text_param(id, p, "preset")?.unwrap_or_else(|| "full".into());
+            let name = name.as_str();
             let preset =
                 Preset::parse(name).ok_or_else(|| bad(id, format!("unknown preset `{name}`: use instagram, story, square, wide or full")))?;
-            let to = match (str_param(p, "path"), str_param(p, "dir")) {
+            let to = match (text_param(id, p, "path")?, text_param(id, p, "dir")?) {
                 (Some(_), Some(_)) => return Err(bad(id, "give `path` or `dir`, not both")),
                 (Some(path), None) => Target::File(PathBuf::from(path)),
                 (None, Some(dir)) => Target::Dir(PathBuf::from(dir)),
@@ -150,12 +149,17 @@ pub fn execute(s: &mut Session, st: &mut BrState, id: &str, p: &Value) -> Result
             Ok(json!({"id": photo.0, "preset": preset.key(), "files": files}))
         }
         "br.reset" => {
-            let photo = target(s, id, id_param(p))?;
-            st.look = None;
-            s.execute_fn(id, |s| {
+            let photo = target(s, id, id_param(id, p)?)?;
+            let r = s.execute_fn(id, |s| {
+                // develop.reset needs a selection even when it is given the photo
+                if s.selection.ids.is_empty() && s.selection.active.is_none() {
+                    activate(s, photo)?;
+                }
                 s.execute("develop.reset", &json!({"ids": [photo.0]}))?;
                 Ok(json!({"id": photo.0}))
-            })
+            })?;
+            st.look = None;
+            Ok(r)
         }
         "br.undo" => s.execute("edit.undo", &json!({})),
         "br.redo" => s.execute("edit.redo", &json!({})),
@@ -216,9 +220,32 @@ mod tests {
             ("br.adjust", json!({})),
             ("br.export", json!({"preset": "poster"})),
             ("br.state", json!({"id": 999999})),
+            ("br.state", json!({"id": "14"})),
+            ("br.adjust", json!({"id": 3.5, "light": 10})),
+            ("br.look", json!({"look": ["lc.moody"]})),
         ] {
             assert!(execute(&mut s, &mut st, id, &p).is_err(), "{id} {p}");
         }
         assert!(matches!(execute(&mut s, &mut st, "br.nope", &json!({})), Err(EngineError::UnknownCommand(_))));
+    }
+
+    #[test]
+    fn reset_works_on_a_named_photo_with_nothing_selected() {
+        let mut s = Session::with_demo();
+        let mut st = BrState::default();
+        let id = s.active().unwrap();
+        execute(&mut s, &mut st, "br.adjust", &json!({"light": 40})).unwrap();
+        s.selection = Default::default();
+        execute(&mut s, &mut st, "br.reset", &json!({"id": id.0})).unwrap();
+        assert_eq!(adjust::values(&s, id)[0].1, 0.0);
+    }
+
+    #[test]
+    fn a_numeric_folder_name_is_a_folder_name() {
+        let mut s = Session::with_demo();
+        let mut st = BrState::default();
+        let e = execute(&mut s, &mut st, "br.export", &json!({"preset": "square", "dir": {"x": 1}})).unwrap_err();
+        assert!(e.to_string().contains("`dir` must be text"), "{e}");
+        assert_eq!(text_param("t", &json!({"dir": 2024}), "dir").unwrap().as_deref(), Some("2024"));
     }
 }

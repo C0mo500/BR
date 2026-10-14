@@ -8,7 +8,7 @@
 use lightcraft_engine::catalog::PhotoId;
 use lightcraft_engine::develop::DevelopSettings;
 use lightcraft_engine::{Result, Session};
-use lightcraft_geom::{CropGeometry, Point, Rect, crop_fit_angle};
+use lightcraft_geom::{CropGeometry, Rect, crop_fit_angle};
 use serde_json::{Value, json};
 
 use crate::photo::{bad, oriented_dims};
@@ -88,39 +88,61 @@ impl Format {
     }
 }
 
-/// Shrink `g` around its centre to whole pixels in the exact ratio `aw:ah`. `w`/`h` is the frame
-/// the crop rectangle is normalised to. Returns `g` unchanged if the crop is smaller than one unit
-/// of the ratio.
-pub fn snap(g: CropGeometry, w: f64, h: f64, (aw, ah): (u32, u32)) -> CropGeometry {
+/// `g` in whole pixels and the exact ratio `aw:ah` (a whole multiple of `aw`×`ah` pixels), as large
+/// as `g` allows, around `g`'s centre. `w`/`h` is the frame the crop rectangle is normalised to.
+/// An unturned crop keeps its corner on whole pixels inside the photo; a turned one stays inside
+/// `g` (see [`snap_within`]). `None` when `g` is smaller than one unit of the ratio.
+pub fn snap(g: CropGeometry, w: f64, h: f64, ratio: (u32, u32)) -> Option<CropGeometry> {
+    if g.angle != 0.0 {
+        return snap_within(g, w, h, ratio);
+    }
     let r = g.rect_px(w, h);
-    let (aw, ah) = (aw.max(1) as f64, ah.max(1) as f64);
+    let (aw, ah) = (ratio.0.max(1) as f64, ratio.1.max(1) as f64);
     // a hair of tolerance so a crop that is already exact does not lose a unit to float noise
     let m = ((r.width() + 1e-6) / aw).min((r.height() + 1e-6) / ah).floor();
     if m < 1.0 {
-        return g;
+        return None;
     }
-    let c = r.center();
-    // keep the corner on a whole pixel too when the frame allows it, so the rendered crop does not
-    // straddle pixel boundaries
     let (cw, ch) = (m * aw, m * ah);
+    let c = r.center();
     let x0 = (c.x - cw / 2.0).round().clamp(0.0, (w - cw).max(0.0));
     let y0 = (c.y - ch / 2.0).round().clamp(0.0, (h - ch).max(0.0));
-    let snapped = Rect::new(x0, y0, x0 + cw, y0 + ch);
-    let out = CropGeometry { rect: snapped.scale(1.0 / w, 1.0 / h), angle: g.angle };
-    if g.angle == 0.0 || out.is_within_image(w, h) {
-        out
-    } else {
-        // turned crops: stay centred where the larger crop was, which is inside the photo
-        let centred = Rect::from_center(Point::new(c.x, c.y), cw, ch);
-        CropGeometry { rect: centred.scale(1.0 / w, 1.0 / h), angle: g.angle }
-    }
+    Some(CropGeometry { rect: Rect::new(x0, y0, x0 + cw, y0 + ch).scale(1.0 / w, 1.0 / h), angle: g.angle })
 }
 
-/// The largest centred crop of `format` in a `w`×`h` frame at `angle` degrees, in whole pixels.
+/// Like [`snap`], but the result always lies inside `g` (for turned crops, and crops LightCraft
+/// constrained to a warped photo, where the area outside `g` may not be image).
+pub fn snap_within(g: CropGeometry, w: f64, h: f64, (aw, ah): (u32, u32)) -> Option<CropGeometry> {
+    let r = g.rect_px(w, h);
+    let (aw, ah) = (aw.max(1) as f64, ah.max(1) as f64);
+    let c = r.center();
+    // where a side of `size` starts: on a whole pixel inside [lo, hi] if it can, else centred
+    let place = |lo: f64, hi: f64, center: f64, size: f64| {
+        let (min, max) = ((lo - 1e-6).ceil(), (hi + 1e-6).floor() - size);
+        if min <= max { (center - size / 2.0).round().clamp(min, max) } else { center - size / 2.0 }
+    };
+    let mut m = ((r.width() + 1e-6) / aw).min((r.height() + 1e-6) / ah).floor();
+    while m >= 1.0 {
+        let (cw, ch) = (m * aw, m * ah);
+        let (x0, y0) = (place(r.x0, r.x1, c.x, cw), place(r.y0, r.y1, c.y, ch));
+        let inside = x0 >= r.x0 - 1e-6 && x0 + cw <= r.x1 + 1e-6 && y0 >= r.y0 - 1e-6 && y0 + ch <= r.y1 + 1e-6;
+        if inside {
+            return Some(CropGeometry { rect: Rect::new(x0, y0, x0 + cw, y0 + ch).scale(1.0 / w, 1.0 / h), angle: g.angle });
+        }
+        m -= 1.0;
+    }
+    None
+}
+
+/// The largest centred crop of `format` in a `w`×`h` frame at `angle` degrees, in whole pixels
+/// (on a photo smaller than one unit of the ratio, the exact ratio without whole pixels).
 pub fn fit(w: f64, h: f64, angle: f64, format: Format) -> CropGeometry {
     match format.ratio() {
         None => crop_fit_angle(w, h, angle, None),
-        Some((aw, ah)) => snap(crop_fit_angle(w, h, angle, Some(aw as f64 / ah as f64)), w, h, (aw, ah)),
+        Some((aw, ah)) => {
+            let g = crop_fit_angle(w, h, angle, Some(aw as f64 / ah as f64));
+            snap(g, w, h, (aw, ah)).unwrap_or(g)
+        }
     }
 }
 
@@ -211,6 +233,25 @@ mod tests {
                 assert_eq!(detect(&d, w, h), Some(if whole { Format::Original } else { f }), "{w}x{h}");
             }
         }
+    }
+
+    #[test]
+    fn snapping_stays_inside_the_crop_it_starts_from() {
+        for (w, h) in SIZES {
+            for f in Format::ALL.into_iter().filter(|f| f.ratio().is_some()) {
+                let ratio = f.ratio().unwrap();
+                // an off-centre crop with fractional edges, roughly in the ratio
+                let g = CropGeometry { rect: Rect::new(0.13, 0.071, 0.77, 0.93), angle: 0.0 };
+                let Some(s) = snap_within(g, w, h, ratio) else { continue };
+                let (r, o) = (g.rect_px(w, h), s.rect_px(w, h));
+                assert!(o.x0 >= r.x0 - 1e-6 && o.x1 <= r.x1 + 1e-6 && o.y0 >= r.y0 - 1e-6 && o.y1 <= r.y1 + 1e-6, "{f:?} {w}x{h}");
+                assert!((o.width() * ratio.1 as f64 - o.height() * ratio.0 as f64).abs() < 1e-6);
+            }
+        }
+        // smaller than one unit of 9:16
+        let g = CropGeometry { rect: Rect::UNIT, angle: 0.0 };
+        assert!(snap(g, 8.0, 12.0, (9, 16)).is_none());
+        assert!(fit(8.0, 12.0, 0.0, Format::Story).is_within_image(8.0, 12.0));
     }
 
     #[test]
