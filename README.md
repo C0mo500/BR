@@ -24,6 +24,8 @@ die mit einem Klick zum Ergebnis führen, und hinter jedem davon das volle Werkz
 Jede Seite behält das Layout, das man ihr gibt. FilmCrafts Menüleiste steht in BRs Kopfzeile, und jedes
 Panel lässt sich über „Fenster“ auf jede Seite holen. Tastenkürzel gehen an die App der sichtbaren Seite.
 
+![Schnitt: CapCuts Werkzeugleiste über FilmCrafts vollständigem Editor](docs/images/br-schnitt.png)
+
 ### Schnitt wie in CapCut
 
 - **Startbildschirm** für ein neues Projekt: Format-Kacheln (9:16, 16:9, 1:1, 4:5), „Medien hinzufügen“,
@@ -40,8 +42,12 @@ Panel lässt sich über „Fenster“ auf jede Seite holen. Tastenkürzel gehen 
 - **Exportieren** (oben rechts) mit Vorlagen für TikTok/Reels/Shorts (1080 × 1920), YouTube 1080p und 4K,
   „wie das Video“ und ProRes 422 HQ. Der Export läuft im Hintergrund, mit Fortschritt.
 
+![Startbildschirm für ein neues Video](docs/images/br-start.png)
+
 Auf der Foto-Seite gibt es dasselbe für Bilder: Looks mit Stärke-Regler, Formate auf den Pixel genau und
 Export-Vorlagen (Instagram, Story, Quadrat, Breitbild, volle Auflösung).
+
+![Foto: LightCraft mit BRs Looks](docs/images/br-foto.png)
 
 ## Für Claude: `br mcp`
 

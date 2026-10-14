@@ -98,7 +98,7 @@ pub const TITLE: &str = "BR";
 const HEADER_H: f32 = 40.0;
 /// Below this window width FilmCraft's menus get a row of their own on the video pages (beside
 /// the page tabs and the header's tools they would be covered).
-const MENUS_INLINE_WIDTH: f32 = 1320.0;
+const MENUS_INLINE_WIDTH: f32 = 1480.0;
 /// Height of that row.
 const MENUS_H: f32 = 28.0;
 
@@ -390,11 +390,12 @@ impl BrApp {
                             let name = video::project_name(&self.fc);
                             let dirty = self.fc.session.is_dirty();
                             let text = if dirty { format!("{name} •") } else { name };
-                            ui.label(egui::RichText::new(text).size(11.5).color(t.dim)).on_hover_text(if dirty {
-                                "Video-Projekt, ungesicherte Änderungen (Datei › Speichern)"
+                            let tip = if dirty {
+                                format!("Video-Projekt „{text}“: ungesicherte Änderungen (Datei › Speichern)")
                             } else {
-                                "Video-Projekt"
-                            });
+                                format!("Video-Projekt „{text}“")
+                            };
+                            ui.label(style::elided(ui, &text, 11.5, t.dim, 180.0)).on_hover_text(tip);
                         }
                     });
                 });

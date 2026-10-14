@@ -876,6 +876,15 @@ fn snapshot(args: &[String]) -> Result<(), String> {
         d.click(&mut app, &button)?;
         d.settle(&mut app, Duration::from_secs(120));
     }
+    // FilmCraft renders its monitors on worker threads: wait for the picture
+    if app.page.is_video() && app.fc.session.active_sequence().is_some_and(|q| q.duration().0 > 0) {
+        let t0 = std::time::Instant::now();
+        while app.fc.program_picture().is_none() && t0.elapsed() < Duration::from_secs(15) {
+            d.step(&mut app, Vec::new());
+            std::thread::sleep(Duration::from_millis(15));
+        }
+        d.settle(&mut app, Duration::from_secs(30));
+    }
     let png = br_ui::headless::png(&d.paint());
     std::fs::write(&out, png).map_err(|e| format!("{}: {e}", out.display()))?;
     app.on_exit();

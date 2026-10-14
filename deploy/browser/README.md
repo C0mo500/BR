@@ -2,7 +2,7 @@
 
 BR läuft auf dem Server und wird im Browser bedient: ein virtueller Bildschirm (TigerVNC `Xvnc`)
 zeigt das BR-Fenster, noVNC bringt ihn über eine WebSocket-Verbindung auf die Seite. Daneben nimmt
-die Seite Fotos entgegen und bietet die Exporte zum Herunterladen an. Gerechnet wird auf der CPU
+die Seite Fotos, Videos, Musik und Untertitel entgegen und bietet die Exporte zum Herunterladen an. Gerechnet wird auf der CPU
 des Servers, eine Grafikkarte ist nicht nötig.
 
 ```
@@ -37,7 +37,7 @@ Ein zweiter Lauf nach `git pull` aktualisiert BR; Einstellungen und Fotos bleibe
 | Programme | `/opt/br/bin` (`br`, `br-web`), `/opt/br/share` |
 | Einstellungen | `/etc/br-web.env` (Ports, Ordner, Bildschirm, Renderer; Hinweise in der Datei) |
 | Bibliothek | `/srv/br/Bibliothek` |
-| Hochgeladene Fotos (die Originale) | `/srv/br/Fotos` |
+| Hochgeladene Dateien (die Originale) | `/srv/br/Fotos` |
 | Exporte | `/srv/br/Exporte` |
 | Dienste | `br-web.service`, `br-dateien.service` |
 
@@ -66,14 +66,31 @@ Wichtig in jedem Proxy (auch Apache, Traefik …):
 ## Benutzen
 
 1. Die Adresse öffnen und anmelden: oben die Leiste der Seite, darunter BR.
-2. **Fotos hochladen** (oder Dateien auf die Seite ziehen). Sie landen in `/srv/br/Fotos`.
-3. In BR **Importieren**: der Dialog öffnet sich in diesem Ordner, **Strg+A** wählt alle, **OK**.
+2. **Hochladen** (oder Dateien auf die Seite ziehen): Fotos, Videos, Musik und Untertitel (bis
+   8 GB je Datei, einstellbar in `/etc/br-web.env`). Sie landen in `/srv/br/Fotos`.
+3. **Video:** in BR auf **Schnitt** „Medien hinzufügen…“ (auf dem Startbildschirm) oder **+ Medien**
+   in der Werkzeugleiste. Der Dialog öffnet sich im Upload-Ordner; das erste Video gibt das Format
+   vor. **Fotos:** auf der Seite **Foto** über **Importieren**; **Strg+A** wählt alle, **OK**.
    Schon importierte Fotos erkennt BR wieder.
-4. Bearbeiten, dann **Exportieren**. Unter **Exporte** auf der Seite liegen die Dateien zum
-   Herunterladen, einzeln oder als ZIP.
+4. Bearbeiten, dann **Exportieren** (oben rechts). Unter **Exporte** auf der Seite liegen die
+   Dateien zum Herunterladen, einzeln oder als ZIP. Ein Video erscheint dort erst, wenn es
+   vollständig geschrieben ist.
 
 Der Bildschirm passt sich der Größe des Browserfensters an; **⛶** schaltet auf Vollbild.
-Hochgeladene Fotos bleiben auf dem Server: BR bearbeitet sie, ohne das Original zu verändern.
+Hochgeladenes bleibt auf dem Server: BR bearbeitet es, ohne das Original zu verändern.
+
+### Claude im selben Fenster
+
+`BR_CONTROL=1` (Standard in `/etc/br-web.env`) öffnet BRs Steuerkanal auf `127.0.0.1`. Claude Code
+auf dem Server arbeitet dann in dem Fenster, das du im Browser siehst: es schneidet, setzt
+Untertitel, exportiert, und du schaust zu.
+
+```sh
+claude mcp add br -- sudo -u br env HOME=/srv/br /opt/br/bin/br mcp --connect
+```
+
+Den Kanal schützt ein Token, das BR bei jedem Start neu erzeugt und nur für den Benutzer `br`
+lesbar ablegt (`/srv/br/.config/BR/control.json`). Ohne das Token wird keine Anfrage ausgeführt.
 
 ## Betrieb
 
@@ -97,6 +114,10 @@ Entfernen: `systemctl disable --now br-web br-dateien`, dann
   dasselbe und bedienen es gemeinsam.
 - **Dateien direkt ins BR-Fenster ziehen** geht über VNC nicht; die Seite fängt sie ab und lädt
   sie hoch.
+- **Ton:** VNC überträgt keinen Ton; Videos spielen im Browser stumm. Pegel zeigt die Ton-Seite,
+  und der Export hat den vollen Ton.
+- **Automatische Untertitel** laden beim ersten Mal ein Sprachmodell (etwa 150 MB) von
+  Hugging Face; der Server braucht dafür Internet. Die Erkennung selbst läuft auf dem Server.
 - **Tempo:** Vorschau und Export rechnet die CPU. Eine Grafikkarte im Server (Vulkan) nutzt BR
   mit `LIGHTCRAFT_GPU=1`; was dazu noch nötig ist, steht in `/etc/br-web.env`.
 - **Ordner** außerhalb von `/srv/br` brauchen eine Freigabe für die Dienste, siehe
