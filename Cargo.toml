@@ -7,19 +7,46 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
+repository = "https://github.com/C0mo500/BR"
 
 [workspace.dependencies]
-# LightCraft (photo engine), pinned to one upstream commit
+# internal
+br-photo = { path = "crates/br-photo" }
+br-mcp = { path = "crates/br-mcp" }
+br-ui = { path = "crates/br-ui" }
+
+# LightCraft (photo engine and its Pro interface), all pinned to one upstream commit
 lightcraft-engine = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
 lightcraft-ui-egui = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
 lightcraft-mcp = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
+lightcraft-geom = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
+lightcraft-raster = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
+lightcraft-codecs = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
+
+# ui (same versions as LightCraft)
 egui = "0.36"
 eframe = { version = "0.36", default-features = false }
+rfd = "0.17"
+
+# foundation
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+log = "0.4"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+too_many_arguments = "allow"
+type_complexity = "allow"
 
 [profile.dev.package."*"]
 opt-level = 2
 
 [profile.dev]
 opt-level = 1
+
+[profile.release]
+debug = "line-tables-only"
