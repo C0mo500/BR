@@ -247,9 +247,14 @@ pub fn open_files(s: &mut Session, paths: &[String]) -> Result<Value, String> {
     }
     let media: Vec<&String> = paths.iter().filter(|p| matches!(kind(p), "video" | "audio" | "image")).collect();
     let mut st = if media.is_empty() { state(s)? } else { execute(s, "br.video.add", &json!({"paths": media}))? };
+    // files that could not be read stay in the answer
+    let errors = st.get("errors").cloned();
     for subs in paths.iter().filter(|p| kind(p) == "caption") {
         execute(s, "br.video.captions", &json!({"path": subs}))?;
         st = state(s)?;
+    }
+    if let Some(e) = errors {
+        st["errors"] = e;
     }
     Ok(st)
 }
@@ -359,7 +364,9 @@ fn place_media(s: &mut Session, items: &[u64], at_playhead: bool) -> filmcraft_e
         let (has_video, _) = s.project.source_streams(filmcraft_project::ItemId(*item));
         let mut q = json!({"item": item, "time": time, "insert": at_playhead});
         if has_video {
+            // the picture on V1, its sound on A1 (where the end was measured)
             q["track"] = json!("V1");
+            q["audioTrack"] = json!("A1");
         } else {
             q["audioTrack"] = json!("A1");
         }
