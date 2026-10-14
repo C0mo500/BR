@@ -30,11 +30,13 @@ pub struct VideoState {
     shown: Option<Page>,
     /// FilmCraft's `eframe::App` methods take a frame they don't use; headless runs have none.
     frame: eframe::Frame,
+    /// Frames in a row in which a font family was missing.
+    fonts_missing: u32,
 }
 
 impl Default for VideoState {
     fn default() -> Self {
-        Self { docks: HashMap::new(), shown: None, frame: eframe::Frame::_new_kittest() }
+        Self { docks: HashMap::new(), shown: None, frame: eframe::Frame::_new_kittest(), fonts_missing: 0 }
     }
 }
 
@@ -96,6 +98,8 @@ pub fn german_by_default(session: &mut br_video::Session) {
 /// Give FilmCraft the layout of `page` (a video page), keeping the layout of the page it leaves.
 pub fn show_page(fc: &mut FilmcraftApp, st: &mut VideoState, page: Page) {
     if st.shown == Some(page) {
+        // the page's mode, should FilmCraft have left it
+        fc.ui.mode = layout(page).0;
         return;
     }
     if let Some(old) = st.shown {
@@ -107,10 +111,25 @@ pub fn show_page(fc: &mut FilmcraftApp, st: &mut VideoState, page: Page) {
     st.shown = Some(page);
 }
 
-/// Playback stops when the video pages are left (the picture would no longer be drawn).
+/// The page that shows FilmCraft's `mode` when it is not `page`'s (FilmCraft switched it itself:
+/// File ▸ Export ▸ Media…, a card in Import mode).
+pub fn page_of_mode(mode: FcMode, page: Page) -> Option<Page> {
+    match mode {
+        FcMode::Export if page != Page::Ausgabe => Some(Page::Ausgabe),
+        FcMode::Import if page != Page::Medien => Some(Page::Medien),
+        FcMode::Edit if matches!(page, Page::Medien | Page::Ausgabe) => Some(Page::Schnitt),
+        _ => None,
+    }
+}
+
+/// Playback stops when the video pages are left (the picture would no longer be drawn), the
+/// Source monitor's too.
 pub fn leave(fc: &mut FilmcraftApp) {
     if fc.playback.playing {
         fc.stop();
+    }
+    if fc.source_playback.clock.playing {
+        fc.stop_source();
     }
 }
 
@@ -118,14 +137,22 @@ pub fn leave(fc: &mut FilmcraftApp) {
 /// for the whole window; whichever did it last must not take a family the other one uses away.
 const FAMILIES: [&str; 2] = ["semibold", "medium"];
 
-/// Every family the apps use is bound. If one is missing (an app just replaced the fonts), bind
-/// it to the regular face and say so: the fonts change at the start of the next frame, and
-/// FilmCraft must not draw before (an unbound family is a panic in egui).
-pub fn fonts_ready(ctx: &egui::Context) -> bool {
+/// Every family the apps use is bound. FilmCraft must not draw while one is missing (an unbound
+/// family is a panic in egui). An app that just installed its fonts has them pending until the
+/// next frame (FilmCraft's include the families), so a first missing frame is waited out; only
+/// when they are still missing (LightCraft replaced the fonts afterwards) are they bound to the
+/// regular face, on top of the fonts in use, from the next frame on.
+pub fn fonts_ready(ctx: &egui::Context, st: &mut VideoState) -> bool {
     let missing: Vec<&str> =
         ctx.fonts(|f| FAMILIES.into_iter().filter(|n| !f.definitions().families.contains_key(&FontFamily::Name((*n).into()))).collect());
     if missing.is_empty() {
+        st.fonts_missing = 0;
         return true;
+    }
+    st.fonts_missing += 1;
+    ctx.request_repaint();
+    if st.fonts_missing < 2 {
+        return false;
     }
     let mut defs = ctx.fonts(|f| f.definitions().clone());
     let regular = defs.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
@@ -138,9 +165,17 @@ pub fn fonts_ready(ctx: &egui::Context) -> bool {
 }
 
 /// FilmCraft's per-frame work before the UI pass (dialogs, its control channel, the first-frame
-/// style). Runs on every page, like LightCraft's.
-pub fn logic(fc: &mut FilmcraftApp, st: &mut VideoState, ctx: &egui::Context) {
+/// style). Runs on every page, like LightCraft's. Off the video pages (`shown` false) its
+/// session's upkeep runs here too, which FilmCraft otherwise does while drawing: the export
+/// queue moves on, proxies, mask tracking and scene detection deliver, auto-save reports.
+pub fn logic(fc: &mut FilmcraftApp, st: &mut VideoState, ctx: &egui::Context, shown: bool) {
     eframe::App::logic(fc, ctx, &mut st.frame);
+    if !shown {
+        fc.session.poll_persistence();
+        if !fc.session.jobs.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
+    }
 }
 
 /// FilmCraft's raw-input hook (window focus, synthetic input of its control channel).
@@ -167,4 +202,31 @@ pub fn menu_bar(fc: &mut FilmcraftApp, ui: &mut egui::Ui) {
 /// When the window closes: FilmCraft flushes its recovery journal and stops its auto-save.
 pub fn on_exit(fc: &mut FilmcraftApp) {
     eframe::App::on_exit(fc);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fonts an app just installed are pending for a frame: the families are waited for once, and
+    /// bound only when they are still missing after that.
+    #[test]
+    fn missing_font_families_are_waited_for_then_bound() {
+        let ctx = egui::Context::default();
+        let mut st = VideoState::default();
+        let run = |ctx: &egui::Context| {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
+            out.textures_delta.clear();
+        };
+        run(&ctx);
+        assert!(!fonts_ready(&ctx, &mut st), "missing: FilmCraft does not draw");
+        run(&ctx);
+        let bound =
+            |ctx: &egui::Context| ctx.fonts(|f| FAMILIES.iter().all(|n| f.definitions().families.contains_key(&FontFamily::Name((*n).into()))));
+        assert!(!bound(&ctx), "the first frame only waits (a pending install is not replaced)");
+        assert!(!fonts_ready(&ctx, &mut st), "still missing: bound now, ready next frame");
+        run(&ctx);
+        assert!(bound(&ctx));
+        assert!(fonts_ready(&ctx, &mut st));
+    }
 }

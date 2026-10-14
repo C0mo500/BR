@@ -291,9 +291,9 @@ fn automatic_captions_come_from_the_speech_as_one_step() {
     let text: Vec<String> = q.caption_tracks[0].captions.iter().map(|c| c.text.clone()).collect();
     assert!(text.join(" ").contains("Hallo zusammen,"), "{text:?}");
 
-    // the same through the command, as the CLI and MCP run it
+    // the same through the command, as the CLI and MCP run it: it replaces the first run's track
     ok(&mut s, "br.video.autoCaptions", json!({"language": "de"}));
-    assert_eq!(s.active_sequence().unwrap().caption_tracks.len(), 2);
+    assert_eq!(s.active_sequence().unwrap().caption_tracks.len(), 1, "one track of automatic captions");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -362,4 +362,166 @@ fn files_are_told_apart_by_kind() {
     }
     assert_eq!(br_video::file_kind("a.webm"), Some("video"));
     assert_eq!(br_video::file_kind("b.heic"), None);
+}
+
+fn landscape(path: &Path, seconds: u32) {
+    let d = seconds.to_string();
+    ffmpeg(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            &format!("testsrc2=size=1920x1080:rate=30:duration={d}"),
+            "-f",
+            "lavfi",
+            "-i",
+            &format!("sine=frequency=550:duration={d}"),
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+        ],
+        path,
+    );
+}
+
+fn clip_scale(s: &Session, clip: u64) -> f64 {
+    let (_, it) = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap();
+    match it.effect("motion").and_then(|m| m.params.get("scale")).map(|p| &p.value) {
+        Some(filmcraft_project::ParamValue::Float(f)) => *f,
+        other => panic!("scale: {other:?}"),
+    }
+}
+
+/// CapCut's order of work: clips (of every shape and sound alone), music, a title, then cutting.
+#[test]
+fn mixed_media_music_and_titles_then_cuts_still_work() {
+    if !have("ffmpeg") || !have("ffprobe") {
+        eprintln!("ffmpeg/ffprobe missing: skipped");
+        return;
+    }
+    let d = dir("capcut-order");
+    let (a, wide, voice, m) = (d.join("a.mp4"), d.join("wide.mp4"), d.join("voice.wav"), d.join("music.m4a"));
+    phone_h264(&a, 3);
+    landscape(&wide, 2);
+    ffmpeg(&["-f", "lavfi", "-i", "sine=frequency=300:duration=2"], &voice);
+    music(&m);
+    let mut s = Session::default();
+    ok(&mut s, "br.video.add", json!({"paths": [a.to_string_lossy()]}));
+    // a landscape clip and a sound file in one go, into the vertical video
+    let undo = s.history.undo.len();
+    let st = ok(&mut s, "br.video.add", json!({"paths": [wide.to_string_lossy(), voice.to_string_lossy()]}));
+    assert_eq!(s.history.undo.len(), undo + 1);
+    assert!((st["seconds"].as_f64().unwrap() - 7.0).abs() < 0.2, "3 s + 2 s picture, then 2 s of sound: {st}");
+    let q = s.active_sequence().unwrap();
+    let wide_clip = q.video_tracks[0].items[1].id.0;
+    assert!((clip_scale(&s, wide_clip) - 56.3).abs() < 0.2, "16:9 fits into 9:16: {}", clip_scale(&s, wide_clip));
+    assert_eq!(s.prefs.media.default_media_scaling, "none", "the user's preference is untouched");
+
+    ok(&mut s, "br.video.music", json!({"path": m.to_string_lossy()}));
+    ok(&mut s, "br.video.text", json!({"text": "Titel", "at": 0.0, "seconds": 6.0}));
+    // delete the first clip: the picture closes up, music and title stay, nothing runs past the end
+    let first = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    let undo = s.history.undo.len();
+    let st = ok(&mut s, "br.video.delete", json!({"clips": [first]}));
+    assert_eq!(s.history.undo.len(), undo + 1, "one undo step");
+    let q = s.active_sequence().unwrap();
+    let picture_end = q.video_tracks[0].items.iter().map(|i| i.end()).max().unwrap();
+    for t in q.all_tracks() {
+        for it in &t.items {
+            assert!(it.end() <= picture_end || it.start >= picture_end, "{} runs past the picture", it.name);
+        }
+    }
+    assert!(q.all_tracks().all(|t| t.sync_lock || t.items.is_empty()), "sync lock restored");
+    assert!((st["seconds"].as_f64().unwrap() - 4.0).abs() < 0.2, "{st}");
+
+    // speed keeps a reversed clip reversed
+    let clip = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
+    s.execute("clip.speedDuration", json!({"clips": [clip], "speed": 100.0, "reverse": true})).unwrap();
+    ok(&mut s, "br.video.speed", json!({"clips": [clip], "speed": 2.0}));
+    let (_, it) = s.active_sequence().unwrap().find_item(filmcraft_project::ClipId(clip)).unwrap();
+    assert!(it.reverse && (it.speed - 2.0).abs() < 1e-6, "reverse {} speed {}", it.reverse, it.speed);
+
+    // detaching only ever unlinks
+    let linked = s.active_sequence().unwrap().video_tracks[0].items.iter().find(|i| i.link.is_some()).map(|i| i.id.0).unwrap();
+    let r = ok(&mut s, "br.video.detachAudio", json!({"clips": [linked]}));
+    assert_eq!(r["detached"], 2, "{r}");
+    assert!(br_video::execute(&mut s, "br.video.detachAudio", &json!({"clips": [linked]})).is_err(), "nothing to detach any more");
+
+    // In and Out marks don't shorten the export
+    let whole = ok(&mut s, "br.video.state", json!({}))["seconds"].as_f64().unwrap();
+    s.execute("playhead.set", json!({"seconds": 1.0})).unwrap();
+    s.execute("markers.markIn", json!({})).unwrap();
+    s.execute("playhead.set", json!({"seconds": 2.0})).unwrap();
+    s.execute("markers.markOut", json!({})).unwrap();
+    let out = d.join("all.mp4");
+    ok(&mut s, "br.video.export", json!({"preset": "video", "path": out.to_string_lossy()}));
+    let dur: f64 = probe(&out)["format"]["duration"].as_str().unwrap().parse().unwrap();
+    assert!((dur - whole).abs() < 0.15 && whole > 2.5, "the whole video ({whole} s), not the marked second: {dur}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn captions_skip_the_music_and_are_burned_into_the_export() {
+    if !have("ffmpeg") || !have("ffprobe") {
+        eprintln!("ffmpeg/ffprobe missing: skipped");
+        return;
+    }
+    let d = dir("burn");
+    let (a, m) = (d.join("talk.mp4"), d.join("music.m4a"));
+    ffmpeg(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=gray:size=320x240:rate=30:duration=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+        ],
+        &a,
+    );
+    music(&m);
+    let mut s = Session::default();
+    ok(&mut s, "br.video.add", json!({"paths": [a.to_string_lossy()]}));
+    ok(&mut s, "br.video.music", json!({"path": m.to_string_lossy()}));
+    s.transcriber = Some(std::sync::Arc::new(filmcraft_speech::FixedTranscriber {
+        transcript: words(&[("GROSSER", 0.2, 0.8), ("TEXT", 0.8, 1.6)]),
+        id: "test".into(),
+    }));
+    let job = br_video::speech::start(&s, &Default::default()).unwrap();
+    let seq = job.sequence;
+    let done = job.wait().unwrap();
+    assert_eq!(done.len(), 1, "the speech clip only, not the music");
+    br_video::speech::apply(&mut s, seq, done).unwrap();
+
+    let (with, without) = (d.join("with.mp4"), d.join("without.mp4"));
+    ok(&mut s, "br.video.export", json!({"preset": "video", "path": with.to_string_lossy()}));
+    ok(&mut s, "br.video.export", json!({"preset": "video", "path": without.to_string_lossy(), "burnCaptions": false}));
+    // the frame at 1 s differs where the caption is drawn
+    let frame = |p: &Path| {
+        let o = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-ss", "1", "-i"])
+            .arg(p)
+            .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"])
+            .output()
+            .unwrap();
+        o.stdout
+    };
+    let (fa, fb) = (frame(&with), frame(&without));
+    assert_eq!(fa.len(), fb.len());
+    let differing = fa.iter().zip(&fb).filter(|(x, y)| x.abs_diff(**y) > 40).count();
+    assert!(differing > 200, "captions are in the picture: {differing} pixels differ");
+    let _ = std::fs::remove_dir_all(&d);
 }

@@ -425,12 +425,14 @@ fn window(args: &[String], logger: Option<&'static logging::AppLogger>) -> Resul
             native_options(renderer),
             Box::new(move |cc| {
                 came_up.store(true, std::sync::atomic::Ordering::Relaxed);
-                let mut app = br_ui::BrApp::with_services(session, lib, br_ui::desktop::services(cc, log_file.as_deref()));
+                // FilmCraft's auto-save first: its interface then offers to recover a crashed session
+                let video = br_ui::desktop::film::session(if demo { None } else { br_ui::desktop::video_dir() });
+                let mut app = br_ui::BrApp::with_sessions(session, video, lib, br_ui::desktop::services(cc, log_file.as_deref()));
                 if let Some(port) = control {
                     app = open_control(app, port, &cc.egui_ctx);
                 }
-                // FilmCraft in the window: dialogs, the GPU, sound, auto-save (not with --demo)
-                br_ui::desktop::film::attach(&mut app.fc, cc, if demo { None } else { br_ui::desktop::video_dir() });
+                // FilmCraft in the window: dialogs, the GPU, sound
+                br_ui::desktop::film::attach(&mut app.fc, cc);
                 // the settings from the last run replace BR's defaults (German, for one)
                 if let Some(ui) = saved {
                     app.lc.ui = ui;

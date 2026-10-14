@@ -101,12 +101,18 @@ pub fn model_ready(s: &Session) -> bool {
     }
 }
 
-/// The media items behind the active sequence's sound: every enabled clip on an audio track,
-/// subclips resolved to their media, each once.
+/// The media items behind the active sequence's speech: every enabled clip on an audio track
+/// that is heard (not muted), except music, effects and ambience (Essential Sound's type, which
+/// `br.video.music` sets); subclips resolved to their media, each once.
 fn targets(s: &Session) -> Vec<ItemId> {
+    use filmcraft_project::AudioType;
     let Some(q) = s.active_sequence() else { return Vec::new() };
     let mut out = Vec::new();
-    for it in q.audio_tracks.iter().flat_map(|t| t.items.iter()).filter(|it| it.enabled) {
+    let heard = q.audio_tracks.iter().filter(|t| t.enabled && !t.muted);
+    let speech = |it: &&filmcraft_project::TrackItem| {
+        it.enabled && !it.essential.as_ref().is_some_and(|e| matches!(e.kind, AudioType::Music | AudioType::Sfx | AudioType::Ambience))
+    };
+    for it in heard.flat_map(|t| t.items.iter()).filter(speech) {
         if let Some((m, _, _)) = s.project.resolve_media(it.item)
             && !out.contains(&m)
         {
@@ -154,7 +160,7 @@ pub fn start(s: &Session, opts: &CaptionOptions) -> Result<CaptionJob, String> {
     let sequence = s.state.active_sequence.ok_or("noch kein Video: erst Medien hinzufügen")?;
     let inputs = inputs(s);
     if inputs.is_empty() {
-        return Err("das Video hat keinen Ton, aus dem sich Untertitel erkennen ließen".into());
+        return Err("das Video hat keinen Ton mit Sprache, aus dem sich Untertitel erkennen ließen".into());
     }
     let recogniser = recogniser(s, opts)?;
     let language = opts.language.clone().filter(|l| !l.is_empty() && l != "auto");
@@ -268,6 +274,9 @@ fn recognise(
     Ok(out)
 }
 
+/// The caption track automatic captions make (and replace on the next run).
+pub const TRACK_NAME: &str = "Auto-Untertitel";
+
 /// Put recognised words into the project: each media item's transcript and, from the sequence's
 /// words, a caption track (FilmCraft's caption rules), one undo step "Auto-Untertitel". Runs on
 /// the sequence the recognition was started for, if it is still the active one.
@@ -280,7 +289,14 @@ pub fn apply(s: &mut Session, sequence: ItemId, done: Recognised) -> Result<Valu
             let transcript = serde_json::to_value(t).map_err(|e| filmcraft_engine::EngineError::Other(e.to_string()))?;
             s.execute("transcript.set", json!({"item": item.0, "transcript": transcript}))?;
         }
-        s.execute("transcript.createCaptions", json!({"name": "Untertitel"}))
+        // a new run replaces the captions of the last one (two would be shown on top of each other)
+        if s.active_sequence().is_some_and(|q| q.caption_tracks.iter().any(|t| t.name == TRACK_NAME)) {
+            s.edit_sequence("Auto-Untertitel", |q, _, _| {
+                q.caption_tracks.retain(|t| t.name != TRACK_NAME);
+                Ok(())
+            })?;
+        }
+        s.execute("transcript.createCaptions", json!({"name": TRACK_NAME}))
     })
     .map_err(|e| e.to_string())
 }

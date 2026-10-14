@@ -186,9 +186,22 @@ pub fn register_process(log_dir: Option<std::path::PathBuf>, gpu_export: bool) {
     filmcraft_ui_egui::crash::install(log_dir);
 }
 
+/// A video session for a window: auto-save and crash recovery in `data_dir` (FilmCraft's settings,
+/// workspaces and recovery journal live there). Started before FilmCraft's interface is made, so
+/// it offers to recover what a crash left and finds the workspaces saved before.
+pub fn session(data_dir: Option<std::path::PathBuf>) -> br_video::Session {
+    let mut s = br_video::Session::default();
+    if let Some(dir) = data_dir
+        && let Err(e) = s.start_autosave(filmcraft_engine::autosave::AutosaveConfig::new(dir))
+    {
+        log::warn!("video auto-save and crash recovery unavailable: {e}");
+    }
+    s
+}
+
 /// FilmCraft in BR's window: the desktop hooks, the window's GPU device for the monitors (without
-/// one they composite on the CPU), sound, and auto-save with crash recovery in `data_dir`.
-pub fn attach(fc: &mut filmcraft_ui_egui::FilmcraftApp, cc: &eframe::CreationContext<'_>, data_dir: Option<std::path::PathBuf>) {
+/// one they composite on the CPU), and sound.
+pub fn attach(fc: &mut filmcraft_ui_egui::FilmcraftApp, cc: &eframe::CreationContext<'_>) {
     fc.hooks = hooks();
     if let Some(rs) = cc.wgpu_render_state.clone() {
         fc.set_wgpu(rs);
@@ -197,11 +210,4 @@ pub fn attach(fc: &mut filmcraft_ui_egui::FilmcraftApp, cc: &eframe::CreationCon
     {
         fc.audio = Some(Box::new(super::audio::CpalOut::new()));
     }
-    if let Some(dir) = data_dir
-        && let Err(e) = fc.session.start_autosave(filmcraft_engine::autosave::AutosaveConfig::new(dir))
-    {
-        log::warn!("video auto-save and crash recovery unavailable: {e}");
-    }
-    // the settings just read may still have the system's language
-    crate::video::german_by_default(&mut fc.session);
 }

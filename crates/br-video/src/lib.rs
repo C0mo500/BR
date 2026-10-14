@@ -267,6 +267,83 @@ pub fn selection(s: &Session) -> usize {
     s.state.selection.len()
 }
 
+/// The clips a command works on: `clips`, else the timeline's selection.
+fn chosen_clips(s: &Session, p: &Value) -> Vec<u64> {
+    match p.get("clips") {
+        Some(Value::Array(a)) => a.iter().filter_map(Value::as_u64).collect(),
+        _ => s.state.selection.iter().map(|c| c.0).collect(),
+    }
+}
+
+/// Put imported items into the active sequence (a new one in the first item's shape when there
+/// is none): one after another at the end (of the picture and the sound, whichever is later) or
+/// inserted at the playhead. Pictures go on V1 with their sound on A1; sound alone on A1.
+fn place_media(s: &mut Session, items: &[u64], at_playhead: bool) -> filmcraft_engine::Result<()> {
+    if s.active_sequence().is_none() {
+        s.execute("file.newSequence", json!({"name": "Video", "fromItems": items}))?;
+        return Ok(());
+    }
+    let seq = s.execute("sequence.inspect", json!({}))?;
+    let mut time = if at_playhead { playhead(&seq) } else { track_end(main_track(&seq)).max(track_end(tracks(&seq, "audio").next())) };
+    for item in items {
+        let (has_video, _) = s.project.source_streams(filmcraft_project::ItemId(*item));
+        let mut q = json!({"item": item, "time": time, "insert": at_playhead});
+        if has_video {
+            q["track"] = json!("V1");
+        } else {
+            q["audioTrack"] = json!("A1");
+        }
+        let placed = s.execute("timeline.place", q)?;
+        let end = ids(&placed, "clips")
+            .iter()
+            .filter_map(|c| s.active_sequence()?.find_item(filmcraft_project::ClipId(*c)).map(|(_, it)| it.end().0))
+            .max();
+        if let Some(end) = end {
+            time = time.max(end);
+        }
+    }
+    Ok(())
+}
+
+/// Delete `chosen` (and the clips linked to them) and close the gap on their tracks only, as
+/// CapCut does: music, titles and captions on other tracks keep their place (FilmCraft refuses a
+/// ripple delete that sync-locked tracks with something in the gap could not follow). What then
+/// runs past the end of the picture is cut at its end.
+fn ripple_delete(s: &mut Session, chosen: &[u64]) -> filmcraft_engine::Result<()> {
+    use filmcraft_project::TrackId;
+    let q = s.active_sequence().ok_or(filmcraft_engine::EngineError::NoSequence)?;
+    let links: Vec<u64> = q.all_tracks().flat_map(|t| t.items.iter()).filter(|it| chosen.contains(&it.id.0)).filter_map(|it| it.link).collect();
+    let affected: Vec<TrackId> = q
+        .all_tracks()
+        .filter(|t| t.items.iter().any(|it| chosen.contains(&it.id.0) || it.link.is_some_and(|l| links.contains(&l))))
+        .map(|t| t.id)
+        .collect();
+    let held: Vec<TrackId> = q.all_tracks().filter(|t| t.sync_lock && !affected.contains(&t.id)).map(|t| t.id).collect();
+    s.edit_sequence("Löschen", |q, _, _| {
+        for t in q.all_tracks_mut().filter(|t| held.contains(&t.id)) {
+            t.sync_lock = false;
+        }
+        Ok(())
+    })?;
+    let deleted = s.execute("edit.rippleDelete", json!({"clips": chosen}));
+    s.edit_sequence("Löschen", |q, _, _| {
+        for t in q.all_tracks_mut().filter(|t| held.contains(&t.id)) {
+            t.sync_lock = true;
+        }
+        // nothing outlasts the picture (music would play over black)
+        let end = q.video_tracks.first().and_then(|t| t.items.iter().map(|it| it.end()).max());
+        if let Some(end) = end.filter(|e| e.0 > 0) {
+            for t in q.all_tracks_mut().filter(|t| !affected.contains(&t.id)) {
+                for it in t.items.iter_mut().filter(|it| it.start < end && it.end() > end) {
+                    it.duration = end - it.start;
+                }
+            }
+        }
+        Ok(())
+    })?;
+    deleted.map(|_| ())
+}
+
 /// The video clips of the active sequence that show media (not titles or graphics).
 fn media_video_clips(s: &Session, seq: &Value) -> Vec<u64> {
     tracks(seq, "video")
@@ -307,14 +384,6 @@ fn opt_f64(cmd: &str, p: &Value, key: &str) -> Result<Option<f64>, String> {
 /// The ids of a list of numbers in `v[key]`.
 fn ids(v: &Value, key: &str) -> Vec<u64> {
     v.get(key).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default()
-}
-
-/// The `clips` parameter, passed on as it is (FilmCraft then uses the selection without it).
-fn clips_param(p: &Value) -> Value {
-    match p.get("clips") {
-        Some(c) if !c.is_null() => json!({"clips": c}),
-        _ => json!({}),
-    }
 }
 
 fn seconds(t: i64) -> f64 {
@@ -383,22 +452,31 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
                 Some("playhead") => true,
                 Some(other) => return Err(err(id, format!("`at` is end or playhead, not `{other}`"))),
             };
-            s.edit_group("Medien hinzufügen", |s| {
-                let imported = s.execute("file.import", json!({"paths": paths}))?;
-                let items = ids(&imported, "items");
-                if items.is_empty() {
-                    return Err(filmcraft_engine::EngineError::BadParams { cmd: "file.import".into(), msg: format!("nothing imported: {imported}") });
-                }
-                // a project without a video: one in the first clip's shape, with the clips in it
-                if s.active_sequence().is_none() {
-                    return s.execute("file.newSequence", json!({"name": "Video", "fromItems": items}));
-                }
-                let seq = s.execute("sequence.inspect", json!({}))?;
-                let time = if at_playhead { playhead(&seq) } else { track_end(main_track(&seq)) };
-                s.execute("timeline.place", json!({"items": items, "track": "V1", "time": time, "insert": at_playhead}))
-            })
-            .map_err(|e| e.to_string())?;
-            state(s)
+            let errors = s
+                .edit_group("Medien hinzufügen", |s| {
+                    let imported = s.execute("file.import", json!({"paths": paths}))?;
+                    let items = ids(&imported, "items");
+                    if items.is_empty() {
+                        return Err(filmcraft_engine::EngineError::BadParams {
+                            cmd: "file.import".into(),
+                            msg: format!("nothing imported: {imported}"),
+                        });
+                    }
+                    // clips of another shape fit into the frame, as in CapCut (FilmCraft's own
+                    // default places them at 100 %); the preference is the user's again afterwards
+                    let saved = std::mem::replace(&mut s.prefs.media.default_media_scaling, "setToFrameSize".into());
+                    let placed = place_media(s, &items, at_playhead);
+                    s.prefs.media.default_media_scaling = saved;
+                    placed?;
+                    Ok(imported.get("errors").cloned().unwrap_or(json!([])))
+                })
+                .map_err(|e| e.to_string())?;
+            let mut st = state(s)?;
+            // files that could not be read are said, the others are in
+            if errors.as_array().is_some_and(|e| !e.is_empty()) {
+                st["errors"] = errors;
+            }
+            Ok(st)
         }
         "br.video.split" => {
             let mut q = json!({});
@@ -407,20 +485,65 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
             }
             run(s, "sequence.addEdit", q)
         }
-        "br.video.delete" => run(s, "edit.rippleDelete", clips_param(p)),
+        "br.video.delete" => {
+            let chosen = chosen_clips(s, p);
+            if chosen.is_empty() {
+                return Err(err(id, "select the clips to delete"));
+            }
+            s.edit_group("Löschen", |s| ripple_delete(s, &chosen)).map_err(|e| e.to_string())?;
+            state(s)
+        }
         "br.video.speed" => {
             let speed = opt_f64(id, p, "speed")?.ok_or_else(|| err(id, "needs `speed`"))?;
             if !(0.01..=100.0).contains(&speed) {
                 return Err(err(id, "`speed` must be between 0.01 and 100"));
             }
-            let mut q = clips_param(p);
-            q["speed"] = json!(speed * 100.0);
-            q["ripple"] = json!(true);
-            run(s, "clip.speedDuration", q)
+            let chosen = chosen_clips(s, p);
+            if chosen.is_empty() {
+                return Err(err(id, "select the clips to speed up or slow down"));
+            }
+            // a reversed clip stays reversed (FilmCraft's command sets the direction too)
+            let q = s.active_sequence().ok_or_else(|| err(id, "no video yet"))?;
+            let (backward, forward): (Vec<u64>, Vec<u64>) =
+                chosen.iter().partition(|c| q.find_item(filmcraft_project::ClipId(**c)).is_some_and(|(_, it)| it.reverse));
+            s.edit_group(&format!("Tempo {speed}×"), |s| {
+                for (clips, reverse) in [(forward, false), (backward, true)] {
+                    if !clips.is_empty() {
+                        s.execute("clip.speedDuration", json!({"clips": clips, "speed": speed * 100.0, "ripple": true, "reverse": reverse}))?;
+                    }
+                }
+                Ok(())
+            })
+            .map_err(|e| e.to_string())?;
+            state(s)
         }
         "br.video.detachAudio" => {
-            // clip.link unlinks clips that are linked (and links them otherwise)
-            run(s, "clip.link", clips_param(p))
+            // only ever unlinks (FilmCraft's clip.link toggles, and links unlinked clips)
+            let chosen = chosen_clips(s, p);
+            if chosen.is_empty() {
+                return Err(err(id, "select the clips whose sound should be separate"));
+            }
+            let linked = s
+                .active_sequence()
+                .is_some_and(|q| q.all_tracks().flat_map(|t| t.items.iter()).any(|it| chosen.contains(&it.id.0) && it.link.is_some()));
+            if !linked {
+                return Err(err(id, "picture and sound of these clips are separate already"));
+            }
+            let n = s
+                .edit_sequence("Ton trennen", |q, _, _| {
+                    let links: Vec<u64> =
+                        q.all_tracks().flat_map(|t| t.items.iter()).filter(|it| chosen.contains(&it.id.0)).filter_map(|it| it.link).collect();
+                    let mut n = 0;
+                    for it in q.all_tracks_mut().flat_map(|t| t.items.iter_mut()) {
+                        if it.link.is_some_and(|l| links.contains(&l)) {
+                            it.link = None;
+                            n += 1;
+                        }
+                    }
+                    Ok(n)
+                })
+                .map_err(|e| e.to_string())?;
+            Ok(json!({"detached": n}))
         }
         "br.video.text" => {
             let text = str_param(id, p, "text")?.to_string();
@@ -521,9 +644,16 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
             }
             let (w, h) = format.size();
             s.edit_group(&format!("Format {}", format.key()), |s| {
-                s.execute("sequence.settings", json!({"width": w, "height": h}))?;
+                // titles, graphics and nested sequences move and scale with the frame
+                s.execute("sequence.settings", json!({"width": w, "height": h, "scaleMotion": true}))?;
                 let seq = s.execute("sequence.inspect", json!({}))?;
-                let clips = media_video_clips(s, &seq);
+                // an animated (keyframed) position or scale is the user's: it stays
+                let animated = |c: &u64| {
+                    s.active_sequence()
+                        .and_then(|q| q.find_item(filmcraft_project::ClipId(*c)))
+                        .is_some_and(|(_, it)| it.effect("motion").is_some_and(|m| m.params.values().any(|p| !p.keyframes.is_empty())))
+                };
+                let clips: Vec<u64> = media_video_clips(s, &seq).into_iter().filter(|c| !animated(c)).collect();
                 if !clips.is_empty() {
                     s.execute(if fill { "clip.fillFrame" } else { "clip.fitToFrame" }, json!({"clips": clips}))?;
                 }
@@ -601,8 +731,20 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
                     export_path(&dir, &name, preset)
                 }
             };
-            let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(false);
-            run(s, "export.quick", json!({"preset": preset.filmcraft, "path": path.to_string_lossy(), "wait": wait}))
+            // waits for the file unless asked not to (the window runs it in the background)
+            let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(true);
+            // captions on screen go into the picture (an MP4 has no other place for them)
+            let burn = p
+                .get("burnCaptions")
+                .and_then(Value::as_bool)
+                .unwrap_or_else(|| s.active_sequence().is_some_and(|q| q.caption_tracks.iter().any(|t| t.enabled && !t.captions.is_empty())));
+            // the whole video, whatever In and Out marks are set
+            let range = p.get("range").cloned().unwrap_or(json!("entire"));
+            run(
+                s,
+                "export.quick",
+                json!({"preset": preset.filmcraft, "path": path.to_string_lossy(), "wait": wait, "burnCaptions": burn, "range": range}),
+            )
         }
         "br.video.state" => state(s),
         "br.video.commands" => {

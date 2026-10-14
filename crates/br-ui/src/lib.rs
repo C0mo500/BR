@@ -120,6 +120,8 @@ pub struct BrApp {
     control: Option<std::sync::mpsc::Receiver<lightcraft_ui_egui::ControlRequest>>,
     /// Control requests whose reply waits for background work.
     pending: Vec<control::Pending>,
+    /// Whose look the window has (`true`: FilmCraft's, `false`: LightCraft's).
+    styled: Option<bool>,
 }
 
 /// The services every BR window has: writing files and PNG screenshots. A desktop window adds
@@ -161,11 +163,18 @@ impl BrApp {
     /// BR on the photo `session` with `services` (a window: [`desktop::services`]) and an empty
     /// video project.
     pub fn with_services(session: Session, library: Option<String>, services: Services) -> Self {
+        Self::with_sessions(session, br_video::Session::default(), library, services)
+    }
+
+    /// BR on the photo `session` and the video session `video` (a window's: its auto-save and
+    /// crash recovery already started, so FilmCraft offers to recover and finds its saved
+    /// workspaces).
+    pub fn with_sessions(session: Session, video: br_video::Session, library: Option<String>, services: Services) -> Self {
         let mut lc = LightcraftApp::new(session, services);
         lc.ui.language = lightcraft_ui_egui::i18n::Locale::De;
         // BR shows its own title; this keeps LightCraft from replacing it with "LightCraft — …"
         lc.shown_library = Some(lc.session.library_generation());
-        let fc = video::new_app(br_video::Session::default());
+        let fc = video::new_app(video);
         let mut app = Self {
             lc,
             fc,
@@ -178,6 +187,7 @@ impl BrApp {
             library,
             control: None,
             pending: Vec::new(),
+            styled: None,
         };
         video::show_page(&mut app.fc, &mut app.video, Page::Schnitt);
         app
@@ -224,19 +234,30 @@ impl BrApp {
         } else {
             without_page_input(ctx, |ctx| self.lc.logic(ctx));
         }
-        video::logic(&mut self.fc, &mut self.video, ctx);
+        video::logic(&mut self.fc, &mut self.video, ctx, self.page.is_video());
+        if self.page.is_video() {
+            // LightCraft's background results that only its interface collects (a finished export)
+            lightcraft_ui_egui::export_task::poll(&mut self.lc, ctx);
+            lightcraft_ui_egui::export_task::poll_photos(&mut self.lc, ctx);
+        }
         control::drain(self, ctx);
-        self.fonts_ok = video::fonts_ready(ctx);
+        self.fonts_ok = video::fonts_ready(ctx, &mut self.video);
         self.lc.shown_library = Some(self.lc.session.library_generation());
         // LightCraft can open another library (Try Again, Open Library…)
         self.library = self.lc.session.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.to_string_lossy().into_owned());
         // closing the window: a question an app asks (save the project? stop the export?) is
         // shown on its page
         if ctx.input(|i| i.viewport().close_requested()) {
-            if self.fc.dialog.is_some() && !self.page.is_video() {
+            // FilmCraft asks about unsaved changes in its quit dialog, LightCraft about running
+            // work in its quit prompt; each is drawn on its app's page
+            let film_asks = self.fc.dialog.is_some() || self.fc.ui.clip_dialog.as_ref().is_some_and(|d| d.command == "app.quit");
+            let photo_asks = self.lc.quit_prompt.is_some() || self.lc.ui.dialog.is_some();
+            if film_asks && !self.page.is_video() {
                 self.open(Page::Schnitt);
-            } else if self.lc.ui.dialog.is_some() && self.page.is_video() {
+            } else if photo_asks && self.page.is_video() {
                 self.open(Page::Foto);
+            } else if !film_asks && !photo_asks {
+                cut::on_close_request(self, ctx);
             }
         }
     }
@@ -258,13 +279,13 @@ impl BrApp {
         let path = |f: &egui::DroppedFileHandle| Some(f.path().to_string_lossy().into_owned()).filter(|p| !p.is_empty());
         if cut::start_screen_visible(self) {
             let paths: Vec<String> = std::mem::take(&mut raw.dropped_files).iter().filter_map(path).collect();
-            cut::add_paths(self, ctx, paths);
+            cut::open_files(self, ctx, paths);
         } else if self.page == Page::Foto {
             let (videos, photos): (Vec<_>, Vec<_>) =
                 std::mem::take(&mut raw.dropped_files).into_iter().partition(|f| path(f).is_some_and(|p| br_video::is_video_file(&p)));
             raw.dropped_files = photos;
             if !videos.is_empty() {
-                cut::add_paths(self, ctx, videos.iter().filter_map(path).collect());
+                cut::open_files(self, ctx, videos.iter().filter_map(path).collect());
                 if raw.dropped_files.is_empty() {
                     self.open(Page::Schnitt);
                 }
@@ -279,6 +300,7 @@ impl BrApp {
         // an export (and a caption recognition) finishes whichever page is showing
         photo::poll_export(self, &ctx);
         cut::poll(self, &ctx);
+        self.style_for_page(&ctx);
         self.header(ui);
         match self.page {
             Page::Foto => {
@@ -296,8 +318,31 @@ impl BrApp {
                 let area = video::ui(&mut self.fc, &mut self.video, ui);
                 cut::set_area(self, area);
                 cut::show(self, &ctx);
+                cut::draw_toast(self, &ctx);
+                // FilmCraft switched its own mode (File ▸ Export ▸ Media…, Import mode's cards):
+                // show the page that has it
+                if let Some(page) = video::page_of_mode(self.fc.ui.mode, self.page) {
+                    self.open(page);
+                }
             }
         }
+    }
+
+    /// Each app draws with its own look (both style the one egui context): the page's app's look
+    /// is applied when the page changes between LightCraft and FilmCraft.
+    fn style_for_page(&mut self, ctx: &egui::Context) {
+        let video = self.page.is_video();
+        if self.styled == Some(video) {
+            return;
+        }
+        if video {
+            let kind = self.fc.appearance_kind(ctx);
+            self.fc.set_theme(ctx, kind);
+        } else {
+            let kind = self.lc.ui.settings.theme(self.lc.system_theme(ctx));
+            lightcraft_ui_egui::theme::apply_kind(ctx, kind);
+        }
+        self.styled = Some(video);
     }
 
     /// BR's header: the wordmark, the pages, the page's quick tools.

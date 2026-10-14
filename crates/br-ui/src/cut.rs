@@ -123,6 +123,8 @@ pub struct CutState {
     area: Option<Rect>,
     /// How the last caption recognition ended (for a control request waiting on it).
     caption_outcome: Option<Result<Value, String>>,
+    /// The window closes once the running export is written (closing was asked for).
+    close_after_export: bool,
 }
 
 impl Default for CutState {
@@ -141,6 +143,7 @@ impl Default for CutState {
             looks: None,
             area: None,
             caption_outcome: None,
+            close_after_export: false,
         }
     }
 }
@@ -172,6 +175,60 @@ fn toast(app: &mut BrApp, ctx: &egui::Context, text: impl Into<String>) {
     let text = text.into();
     log::info!("{text}");
     app.fc.toast = Some((text, ctx.input(|i| i.time)));
+}
+
+/// How long a message stays: long enough to read it.
+fn toast_seconds(text: &str) -> f64 {
+    (3.0 + text.chars().count() as f64 / 18.0).min(10.0)
+}
+
+/// The message in FilmCraft's toast (BR's and FilmCraft's own), over the bottom of the video
+/// pages (FilmCraft keeps it but does not draw it).
+pub fn draw_toast(app: &mut BrApp, ctx: &egui::Context) {
+    let Some((text, since)) = app.fc.toast.clone() else { return };
+    let age = ctx.input(|i| i.time) - since;
+    if age > toast_seconds(&text) || age < 0.0 {
+        app.fc.toast = None;
+        return;
+    }
+    let Some(area) = app.cut.area else { return };
+    let t = Theme::get(ctx);
+    let max_w = (area.width() - 48.0).clamp(200.0, 640.0);
+    let r = egui::Area::new(egui::Id::new("br_toast"))
+        .order(egui::Order::Tooltip)
+        .anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, -(ctx.content_rect().bottom() - area.bottom()) - 36.0))
+        .interactable(true)
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).fill(t.bar).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::symmetric(14, 10)).show(
+                ui,
+                |ui| {
+                    ui.set_max_width(max_w);
+                    ui.label(RichText::new(&text).size(13.0).color(t.text));
+                },
+            )
+        });
+    app.widgets.insert("toast".into(), r.response.rect);
+    // a click takes it away
+    if r.response.clicked() {
+        app.fc.toast = None;
+    }
+    ctx.request_repaint_after(std::time::Duration::from_millis(200));
+}
+
+/// The window is asked to close while a video export or a caption recognition runs: the export
+/// is finished first (the window then closes); asked again, it is stopped and the window closes.
+pub fn on_close_request(app: &mut BrApp, ctx: &egui::Context) {
+    if let Some(job) = &app.cut.captions {
+        job.cancel();
+    }
+    let Some(job) = app.cut.export.as_ref().map(|e| e.job) else { return };
+    if app.cut.close_after_export {
+        let _ = br_video::execute(&mut app.fc.session, "jobs.cancel", &json!({"job": job}));
+        return;
+    }
+    app.cut.close_after_export = true;
+    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+    toast(app, ctx, "Das Video wird noch gespeichert: BR schließt sich, sobald es fertig ist. Noch einmal schließen bricht den Export ab.");
 }
 
 /// Run one of BR's video commands (or FilmCraft's) on the video project; a failure is told in the
@@ -457,6 +514,9 @@ pub fn poll(app: &mut BrApp, ctx: &egui::Context) {
         };
         if let Some(r) = result {
             app.cut.export = None;
+            if std::mem::take(&mut app.cut.close_after_export) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
             match r {
                 Ok(_) => {
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();

@@ -33,6 +33,18 @@ impl Driver {
         self.time += 1.0 / 60.0;
     }
 
+    /// One frame in which the window is asked to close (its close button).
+    pub fn request_close(&mut self, app: &mut BrApp) {
+        let mut raw = HeadlessView::raw_input(self.size, self.ppp, self.time, Vec::new());
+        raw.viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+        app.raw_input_hook(&self.view.ctx, &mut raw);
+        self.view.run(raw, |ui| {
+            app.logic(ui.ctx());
+            app.ui(ui);
+        });
+        self.time += 1.0 / 60.0;
+    }
+
     /// One frame in which `paths` are dropped on the window (at the pointer).
     pub fn drop_files(&mut self, app: &mut BrApp, paths: &[std::path::PathBuf]) {
         let mut raw = HeadlessView::raw_input(self.size, self.ppp, self.time, Vec::new());

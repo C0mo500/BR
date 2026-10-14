@@ -494,3 +494,54 @@ fn the_export_popover_writes_the_video_in_the_background() {
     assert!(std::fs::metadata(&out).unwrap().len() > 1000, "{}", out.display());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn messages_from_the_video_tools_are_shown() {
+    let (mut app, mut d) = video_app();
+    br_ui::cut::add_paths(&mut app, &d.view.ctx.clone(), vec!["/nowhere/gone.mp4".into()]);
+    d.step(&mut app, Vec::new());
+    d.step(&mut app, Vec::new());
+    let texts = d.texts();
+    assert!(app.widgets.contains_key("toast"), "the message is drawn");
+    assert!(texts.iter().any(|t| t.contains("gone.mp4") || t.contains("nothing imported") || t.contains("import")), "{texts:?}");
+}
+
+#[test]
+fn the_page_follows_filmcrafts_mode() {
+    let (mut app, mut d) = video_app();
+    assert_eq!(app.page, Page::Schnitt);
+    // File ▸ Export ▸ Media… switches FilmCraft to its Export mode
+    app.fc.ui.mode = filmcraft_ui_egui::state::Mode::Export;
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(app.page, Page::Ausgabe);
+    app.fc.ui.mode = filmcraft_ui_egui::state::Mode::Edit;
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(app.page, Page::Schnitt);
+}
+
+#[test]
+fn closing_on_foto_with_unsaved_video_shows_filmcrafts_question() {
+    let (mut app, mut d) = video_app();
+    br_video::execute(&mut app.fc.session, "br.video.new", &serde_json::json!({"format": "16:9"})).unwrap();
+    assert!(app.fc.session.is_dirty());
+    app.open(Page::Foto);
+    assert!(d.settle(&mut app, SETTLE));
+    d.request_close(&mut app);
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(app.page, Page::Schnitt, "FilmCraft's save question is on its page");
+    assert!(app.fc.ui.clip_dialog.as_ref().is_some_and(|q| q.command == "app.quit"));
+}
+
+#[test]
+fn each_page_has_its_apps_look() {
+    let (mut app, mut d) = video_app();
+    let body = |d: &Driver| d.view.ctx.global_style().text_styles[&egui::TextStyle::Body].size;
+    let film = body(&d);
+    app.open(Page::Foto);
+    assert!(d.settle(&mut app, SETTLE));
+    let photo = body(&d);
+    app.open(Page::Farbe);
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(body(&d), film, "FilmCraft's look is back on its pages");
+    assert_ne!(film, photo, "LightCraft's look on Foto (its body text is another size)");
+}
