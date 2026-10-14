@@ -30,6 +30,7 @@ class Server(unittest.TestCase):
             pass
 
         Handler.photos, Handler.exports, Handler.max_bytes = self.photos.resolve(), self.exports.resolve(), 1 << 20
+        Handler.vnc_password_file = self.dir / "vnc-passwort"
         Handler.log_message = lambda *a: None
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -74,9 +75,33 @@ class Server(unittest.TestCase):
         (self.photos / "a.jpg").write_bytes(b"a")
         (self.photos / "notiz.txt").write_bytes(b"n")
         d = json.loads(self.request("GET", "/api/dateien")[1])
-        self.assertEqual([f["name"] for f in d["fotos"]], ["a.jpg"])
+        self.assertEqual(d["fotos"], 1)
         self.assertEqual([f["path"] for f in d["exporte"]], ["sub/b.jpg"])
-        self.assertEqual(d["max_mb"], 1)
+        self.assertEqual((d["exporte_gesamt"], d["max_mb"]), (1, 1))
+
+    def test_more_exports_than_listed(self):
+        for i in range(br.MAX_LISTED + 5):
+            (self.exports / f"{i}.jpg").write_bytes(b"x")
+        d = json.loads(self.request("GET", "/api/dateien")[1])
+        self.assertEqual((len(d["exporte"]), d["exporte_gesamt"]), (br.MAX_LISTED, br.MAX_LISTED + 5))
+
+    def test_a_name_that_is_not_utf8_does_not_break_the_lists(self):
+        os.close(os.open(os.fsencode(self.photos) + b"/Urlaub_\xe4.jpg", os.O_CREAT | os.O_WRONLY))
+        os.close(os.open(os.fsencode(self.exports) + b"/Strand_\xe4.jpg", os.O_CREAT | os.O_WRONLY))
+        r, body = self.request("GET", "/api/dateien")
+        self.assertEqual(r.status, 200)
+        d = json.loads(body)
+        self.assertEqual((d["fotos"], d["exporte_gesamt"]), (1, 1))
+        r, body = self.request("GET", "/exporte.zip")
+        self.assertEqual(len(zipfile.ZipFile(io.BytesIO(body)).namelist()), 1)
+
+    def test_the_vnc_password_only_for_the_own_page(self):
+        self.assertEqual(self.request("GET", "/api/vnc", headers={"X-BR": "1"})[0].status, 503, "before br-web wrote it")
+        (self.dir / "vnc-passwort").write_text("Ab+/9xYz")
+        self.assertEqual(self.request("GET", "/api/vnc")[0].status, 403)
+        r, body = self.request("GET", "/api/vnc", headers={"X-BR": "1"})
+        self.assertEqual((r.status, json.loads(body)), (200, {"passwort": "Ab+/9xYz"}))
+        self.assertEqual(r.getheader("Cache-Control"), "no-store")
 
     def test_upload_lands_in_the_photo_folder_without_overwriting(self):
         r, body = self.upload("Urlaub am Meer.JPG")
@@ -101,6 +126,10 @@ class Server(unittest.TestCase):
         self.assertEqual(self.upload("ohne-endung")[0].status, 415)
         self.assertEqual(self.upload("...")[0].status, 400)
         self.assertEqual(self.headers_only("gross.jpg", (1 << 20) + 1).status, 413)
+        # mit dem ganzen Inhalt unterwegs: die Absage kommt trotzdem an (kein Abbruch der Verbindung)
+        for _ in range(3):
+            self.assertEqual(self.upload("gross.jpg", b"x" * (3 << 20))[0].status, 413)
+            self.assertEqual(self.upload("notiz.txt", b"x" * (3 << 20))[0].status, 415)
         self.assertEqual(self.request("PUT", "/anderswo/a.jpg", b"x", {"X-BR": "1"})[0].status, 404)
         self.assertEqual(os.listdir(self.photos), [])
 

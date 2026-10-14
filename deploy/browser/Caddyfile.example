@@ -7,6 +7,14 @@ br.example.org {
 	}
 	# noVNC und seine WebSocket-Verbindung
 	handle_path /novnc/* {
+		# Nur die eigene Seite darf die Verbindung zu BR öffnen: der Browser schickt den Login
+		# auch mit, wenn eine fremde Webseite es versucht.
+		@fremd {
+			header Origin *
+			not header Origin {scheme}://{hostport}
+		}
+		respond @fremd 403
+		header X-Frame-Options SAMEORIGIN
 		reverse_proxy 127.0.0.1:6080
 	}
 	# die Seite, Foto-Upload und Exporte
@@ -26,6 +34,12 @@ br.example.org {
 # 			ich $2a$14$HASH
 # 		}
 # 		handle_path /novnc/* {
+# 			@fremd {
+# 				header Origin *
+# 				not header Origin {scheme}://{hostport}
+# 			}
+# 			respond @fremd 403
+# 			header X-Frame-Options SAMEORIGIN
 # 			reverse_proxy 127.0.0.1:6080
 # 		}
 # 		handle {

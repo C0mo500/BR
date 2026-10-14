@@ -13,7 +13,9 @@ Browser ──HTTPS + Login──▶ Reverse-Proxy (Caddy / nginx)
 
 Alles hört nur auf `127.0.0.1`; den VNC-Server selbst erreicht nur websockify (über eine
 Socket-Datei im Dienst). Ins Netz kommt BR allein über den Reverse-Proxy, und der verlangt einen
-Login.
+Login. Zusätzlich verlangt der VNC-Server ein Passwort, das bei jedem Start neu ausgewürfelt wird
+und das nur die eigene Seite abholen kann: Der Browser schickt den Login auch mit, wenn eine
+fremde Webseite eine Verbindung zu BR versucht – ohne das Passwort kommt sie trotzdem nicht weiter.
 
 ## Einrichten
 
@@ -33,7 +35,7 @@ Ein zweiter Lauf nach `git pull` aktualisiert BR; Einstellungen und Fotos bleibe
 | Was | Wo |
 | --- | --- |
 | Programme | `/opt/br/bin` (`br`, `br-web`), `/opt/br/share` |
-| Einstellungen | `/etc/br-web.env` (Ports, Ordner, Bildschirm, Renderer) |
+| Einstellungen | `/etc/br-web.env` (Ports, Ordner, Bildschirm, Renderer; Hinweise in der Datei) |
 | Bibliothek | `/srv/br/Bibliothek` |
 | Hochgeladene Fotos (die Originale) | `/srv/br/Fotos` |
 | Exporte | `/srv/br/Exporte` |
@@ -50,8 +52,12 @@ Subdomain (`br.example.org`) ist am einfachsten; ein Pfad einer bestehenden Doma
 einfügen, die Login-Datei mit `htpasswd -c /etc/nginx/br.htpasswd NAME` anlegen,
 `nginx -t && systemctl reload nginx`.
 
-Wichtig in jedem Proxy: `/novnc/` braucht WebSockets (Caddy kann das von selbst, nginx mit den
-`Upgrade`-Zeilen der Vorlage), und Uploads dürfen groß sein und sollen nicht gepuffert werden.
+Wichtig in jedem Proxy (auch Apache, Traefik …):
+
+- `/novnc/` braucht WebSockets (Caddy kann das von selbst, nginx mit den `Upgrade`-Zeilen).
+- `/novnc/websockify` mit einem fremden `Origin`-Header abweisen (403), wie in den Vorlagen.
+- Uploads dürfen groß sein und sollen nicht gepuffert werden.
+- Unter einem Pfad: `/br` auf `/br/` umleiten.
 
 ## Benutzen
 
@@ -87,10 +93,15 @@ Entfernen: `systemctl disable --now br-web br-dateien`, dann
   dasselbe und bedienen es gemeinsam.
 - **Dateien direkt ins BR-Fenster ziehen** geht über VNC nicht; die Seite fängt sie ab und lädt
   sie hoch.
-- **Tempo:** Vorschau und Export rechnet die CPU. Mit einer Grafikkarte im Server:
-  `LIGHTCRAFT_GPU=1` in `/etc/br-web.env` und `PrivateDevices=no` in `br-web.service`.
-- **Bildqualität der Übertragung:** noVNC überträgt mit JPEG-Qualität 8 von 9. Für die
-  Farbbeurteilung zählt der Export, nicht das Bild im Browser.
+- **Tempo:** Vorschau und Export rechnet die CPU. Eine Grafikkarte im Server (Vulkan) nutzt BR
+  mit `LIGHTCRAFT_GPU=1`; was dazu noch nötig ist, steht in `/etc/br-web.env`.
+- **Ordner** außerhalb von `/srv/br` brauchen eine Freigabe für die Dienste, siehe
+  `/etc/br-web.env`.
+- **Bildqualität der Übertragung:** Das Bild im Browser ist verlustbehaftet komprimiert. Für die
+  Farbbeurteilung zählt der Export.
 - **Datei-Dialoge** zeigen das Dateisystem des Servers, mit den Rechten des Benutzers `br`.
-- **Ports auf 127.0.0.1** (6080, 6081) sind ohne Login: wer auf dem Server selbst ein Konto hat,
-  erreicht sie. Für einen Server, den man allein nutzt, ist das in Ordnung.
+- **Ports auf 127.0.0.1** (6080, 6081) haben keinen eigenen Login: wer auf dem Server selbst ein
+  Konto hat, erreicht darüber die Seite und BR. Für einen Server, den man allein nutzt, ist das in
+  Ordnung.
+- **Kleine Fenster:** BR braucht mindestens 1000 × 640 Punkte; ist das Browserfenster kleiner,
+  lässt sich die Seite verschieben (oder **⛶** für Vollbild).

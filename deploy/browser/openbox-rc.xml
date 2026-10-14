@@ -43,9 +43,13 @@
     </context>
   </mouse>
   <applications>
-    <application class="br" type="normal">
+    <!-- nur das Hauptfenster (Titel beim Öffnen: "BR"); ein zweites Fenster aus dem Pro-Modus
+         behält Rahmen und Schließen-Knopf. "below": Dialoge bleiben über BR, auch nach einem
+         Klick auf BR – sonst verschwände ein Datei-Dialog hinter dem bildschirmfüllenden Fenster. -->
+    <application class="br" title="BR" type="normal">
       <decor>no</decor>
       <maximized>yes</maximized>
+      <layer>below</layer>
     </application>
   </applications>
 </openbox_config>

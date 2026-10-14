@@ -3,7 +3,8 @@
 
 Zeigt BR (noVNC unter ``novnc/``, vom Reverse-Proxy an websockify weitergereicht) und nimmt Fotos
 entgegen: hochgeladene Fotos landen im Foto-Ordner, den der Import-Dialog von BR öffnet; Exporte
-lassen sich einzeln oder als ZIP herunterladen.
+lassen sich einzeln oder als ZIP herunterladen. Das VNC-Passwort, das br-web bei jedem Start neu
+setzt, gibt es nur der eigenen Seite (``/api/vnc``).
 
 Läuft auf 127.0.0.1 hinter dem Reverse-Proxy, der HTTPS und den Login übernimmt (README.md).
 Nur die Python-Standardbibliothek.
@@ -15,10 +16,10 @@ import mimetypes
 import os
 import secrets
 import shutil
+import socket
 import sys
 import urllib.parse
 import zipfile
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -124,6 +125,7 @@ class Handler(BaseHTTPRequestHandler):
     photos: Path
     exports: Path
     max_bytes: int
+    vnc_password_file: Path
 
     def log_message(self, fmt, *args):
         sys.stderr.write("br-dateien: " + (fmt % args) + "\n")
@@ -141,10 +143,31 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def json(self, status: int, value):
-        self.reply(status, json.dumps(value, ensure_ascii=False).encode(), "application/json; charset=utf-8")
+        # ein Dateiname, der kein UTF-8 ist (aus einem alten ZIP), soll nicht die ganze Liste kosten
+        self.reply(status, json.dumps(value, ensure_ascii=False).encode("utf-8", "replace"), "application/json; charset=utf-8")
 
     def fail(self, status: int, message: str):
         self.json(status, {"fehler": message})
+
+    def own_page(self) -> bool:
+        """Kommt die Anfrage von der eigenen Seite? Eine fremde Seite kann diesen Header nicht ohne
+        CORS setzen, und CORS erlaubt br-dateien nicht."""
+        return self.headers.get("X-BR") == "1"
+
+    def refuse(self, status: int, message: str):
+        """Eine Absage auf einen Upload, dessen Inhalt noch unterwegs ist: erst antworten, dann den
+        Rest lesen und verwerfen. Sonst setzt der Kernel die Verbindung zurück, und der Proxy macht
+        aus der Absage ein „502“."""
+        self.close_connection = True
+        self.fail(status, message)
+        try:
+            self.wfile.flush()
+            self.connection.shutdown(socket.SHUT_WR)
+            self.connection.settimeout(60)
+            while self.rfile.read(CHUNK):
+                pass
+        except OSError:
+            pass
 
     def route(self):
         url = urllib.parse.urlsplit(self.path)
@@ -167,20 +190,35 @@ class Handler(BaseHTTPRequestHandler):
                 },
             )
         elif path == "/api/dateien":
+            exports = list_exports(self.exports)
             self.json(
                 200,
                 {
-                    "fotos": list_photos(self.photos)[:MAX_LISTED],
-                    "exporte": list_exports(self.exports)[:MAX_LISTED],
+                    "fotos": sum(1 for _ in list_photos(self.photos)),
+                    "exporte": exports[:MAX_LISTED],
+                    "exporte_gesamt": len(exports),
                     "max_mb": self.max_bytes >> 20,
                 },
             )
+        elif path == "/api/vnc":
+            self.vnc_password()
         elif path == "/exporte.zip":
             self.zip_exports()
         elif path.startswith("/exporte/"):
             self.send_export(path.removeprefix("/exporte/"))
         else:
             self.fail(404, "Nicht gefunden")
+
+    def vnc_password(self):
+        if not self.own_page():
+            return self.fail(403, "Nicht erlaubt")
+        try:
+            password = self.vnc_password_file.read_text().strip()
+        except OSError:
+            password = ""
+        if not password:
+            return self.fail(503, "BR startet gerade")
+        self.json(200, {"passwort": password})
 
     def send_export(self, rel: str):
         p = export_file(self.exports, rel)
@@ -211,30 +249,29 @@ class Handler(BaseHTTPRequestHandler):
             for f in files:
                 p = export_file(self.exports, f["path"])
                 if p is not None:
-                    z.write(p, f["path"])
+                    z.write(p, f["path"].encode("utf-8", "replace").decode())
 
     def do_PUT(self):
         path = self.route()
         if not path.startswith("/api/fotos/"):
-            return self.fail(404, "Nicht gefunden")
-        # nur die eigene Seite lädt hoch: ein anderer Ursprung bekommt diesen Header nicht ohne CORS
-        if self.headers.get("X-BR") != "1":
-            return self.fail(403, "Nicht erlaubt")
+            return self.refuse(404, "Nicht gefunden")
+        if not self.own_page():
+            return self.refuse(403, "Nicht erlaubt")
         name = safe_name(path.removeprefix("/api/fotos/"))
         if not name:
-            return self.fail(400, "Kein gültiger Dateiname")
+            return self.refuse(400, "Kein gültiger Dateiname")
         if extension(name) not in PHOTO_EXTENSIONS:
-            return self.fail(415, f"„{name}“ ist kein Foto, das BR öffnen kann")
+            return self.refuse(415, f"„{name}“ ist kein Foto, das BR öffnen kann")
         if self.headers.get("Transfer-Encoding") or self.headers.get("Content-Length") is None:
-            return self.fail(411, "Größe fehlt")
+            return self.refuse(411, "Größe fehlt")
         try:
             length = int(self.headers["Content-Length"])
         except ValueError:
-            return self.fail(400, "Ungültige Größe")
+            return self.refuse(400, "Ungültige Größe")
         if length < 0 or length > self.max_bytes:
-            return self.fail(413, f"„{name}“ ist zu groß (höchstens {self.max_bytes >> 20} MB)")
+            return self.refuse(413, f"„{name}“ ist zu groß (höchstens {self.max_bytes >> 20} MB)")
         if shutil.disk_usage(self.photos).free < length + RESERVE:
-            return self.fail(507, "Auf dem Server ist nicht genug Platz")
+            return self.refuse(507, "Auf dem Server ist nicht genug Platz")
         tmp = self.photos / f".upload-{secrets.token_hex(8)}.part"
         try:
             with open(tmp, "xb") as f:
@@ -250,9 +287,8 @@ class Handler(BaseHTTPRequestHandler):
             final = place(tmp, self.photos, name)
         except (OSError, ConnectionError) as e:
             tmp.unlink(missing_ok=True)
-            self.close_connection = True
             try:
-                self.fail(500, f"„{name}“ wurde nicht gespeichert: {e}")
+                self.refuse(500, f"„{name}“ wurde nicht gespeichert: {e}")
             except OSError:
                 pass  # der Browser ist schon weg
             return
@@ -278,8 +314,9 @@ button:hover, .button:hover { border-color: var(--accent); }
 #status { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
 #status.bad { color: var(--bad); }
 .count { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 9px; background: #444; font-size: 12px; text-align: center; }
-main { flex: 1; position: relative; min-height: 0; }
-iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #1c1c1c; }
+main { flex: 1; position: relative; min-height: 0; overflow: auto; }
+/* nie kleiner als das BR-Fenster mindestens ist (1000 × 640): sonst ragt BR über den Bildschirm */
+iframe { position: absolute; inset: 0; width: 100%; height: 100%; min-width: 1000px; min-height: 640px; border: 0; background: #1c1c1c; }
 aside { position: absolute; top: 0; right: 0; bottom: 0; width: min(380px, 100%); background: var(--bar); border-left: 1px solid var(--line); display: none; flex-direction: column; z-index: 2; }
 aside.open { display: flex; }
 aside h2 { font-size: 15px; margin: 0; padding: 12px 14px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--line); }
@@ -317,23 +354,53 @@ aside .actions { padding: 10px 14px; display: flex; gap: 8px; border-bottom: 1px
 </main>
 <script>
 "use strict";
+// die Seite rechnet mit ihrem Ordner als Adresse: …/br/ statt …/br
+if (!location.pathname.endsWith("/")) location.replace(location.pathname + "/" + location.search + location.hash);
 const EXT = new Set(__EXTENSIONS__);
 const $ = (id) => document.getElementById(id);
 const base = location.pathname.replace(/[^/]*$/, "");
-const params = new URLSearchParams({ autoconnect: 1, resize: "remote", reconnect: 1, reconnect_delay: 1500, quality: 8, compression: 2,
-  path: base.slice(1) + "novnc/websockify" });
-$("br").src = base + "novnc/vnc.html?" + params;
+// absolute Adressen ohne Zugangsdaten: wer die Seite als https://name:passwort@… öffnet, dem
+// verweigert fetch() sonst jede relative Adresse
+const here = location.origin + base;
+const LIST_ERR = "Die Liste konnte nicht geladen werden.";
 
 function say(text, bad) { $("status").textContent = text; $("status").className = bad ? "bad" : ""; }
 function size(n) { return n >= 1e9 ? (n / 1e9).toFixed(1) + " GB" : n >= 1e6 ? (n / 1e6).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1e3)) + " kB"; }
-function isPhoto(f) { const i = f.name.lastIndexOf("."); return i > 0 && EXT.has(f.name.slice(i + 1).toLowerCase()); }
+function isPhoto(f) { const i = f.name.lastIndexOf("."); return !f.name.startsWith(".") && i > 0 && EXT.has(f.name.slice(i + 1).toLowerCase()); }
+
+// BR: noVNC im Rahmen. Das VNC-Passwort (neu bei jedem Start von BR) holt die Seite hier ab und
+// gibt es noVNC im #-Teil der Adresse mit – der geht an keinen Server und in kein Log.
+let loads = 0;
+async function connect() {
+  let password = "";
+  try {
+    const r = await fetch(here + "api/vnc", { cache: "no-store", headers: { "X-BR": "1" } });
+    if (r.ok) password = (await r.json()).passwort;
+  } catch (_) {}
+  if (!password) return;
+  const p = new URLSearchParams({ autoconnect: 1, resize: "remote", reconnect: 1, reconnect_delay: 2000, quality: 8, compression: 2,
+    path: base.slice(1) + "novnc/websockify", password });
+  $("br").src = `${here}novnc/vnc.html?n=${++loads}#${p}`;
+}
+// noVNC versucht nach einem Abbruch nur einmal neu zu verbinden. Ist BR neu gestartet (neues
+// Passwort), der Laptop aufgewacht oder das Netz zurück, lädt die Seite noVNC selbst neu.
+const LIVE = ["noVNC_connected", "noVNC_connecting", "noVNC_reconnecting", "noVNC_disconnecting", "noVNC_loading"];
+let down = 0;
+setInterval(() => {
+  if (document.hidden) return;
+  let cls = null;
+  try { cls = $("br").contentDocument?.documentElement?.classList; } catch (_) { return; }
+  down = cls && LIVE.some((c) => cls.contains(c)) ? 0 : down + 1;
+  if (down >= 2) { down = 0; connect(); }
+}, 3000);
 
 async function refresh() {
   try {
-    const r = await fetch("api/dateien", { cache: "no-store" });
+    const r = await fetch(here + "api/dateien", { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
     const d = await r.json();
     maxBytes = d.max_mb * 1048576;
-    $("n").textContent = d.exporte.length;
+    $("n").textContent = d.exporte_gesamt;
     const list = $("list");
     list.replaceChildren();
     for (const f of d.exporte) {
@@ -346,15 +413,20 @@ async function refresh() {
       a.append(name, meta);
       list.append(a);
     }
-    if (!d.exporte.length) { const p = document.createElement("div"); p.className = "hint"; p.textContent = "Noch keine Exporte. In BR: Export → Exportieren."; list.append(p); }
-    $("photos").textContent = d.fotos.length + " Fotos auf dem Server. Hochgeladene Fotos bleiben dort: BR bearbeitet sie, ohne das Original zu verändern.";
-  } catch (e) { say("Die Liste konnte nicht geladen werden.", true); }
+    const note = (text) => { const p = document.createElement("div"); p.className = "hint"; p.textContent = text; list.append(p); };
+    if (!d.exporte.length) note("Noch keine Exporte. In BR: Export → Exportieren.");
+    else if (d.exporte_gesamt > d.exporte.length) note(`Die neuesten ${d.exporte.length} von ${d.exporte_gesamt}; alle zusammen gibt es als ZIP.`);
+    $("photos").textContent = d.fotos + " Fotos auf dem Server. Hochgeladene Fotos bleiben dort: BR bearbeitet sie, ohne das Original zu verändern.";
+    if ($("status").textContent === LIST_ERR) say("");
+  } catch (e) {
+    if (!uploading && (!$("status").textContent || $("status").textContent === LIST_ERR)) say(LIST_ERR, true);
+  }
 }
 
 function put(file, onProgress) {
   return new Promise((resolve, reject) => {
     const x = new XMLHttpRequest();
-    x.open("PUT", "api/fotos/" + encodeURIComponent(file.name));
+    x.open("PUT", here + "api/fotos/" + encodeURIComponent(file.name));
     x.setRequestHeader("X-BR", "1");
     x.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded);
     x.onload = () => {
@@ -366,10 +438,11 @@ function put(file, onProgress) {
   });
 }
 
-let uploading = false, maxBytes = Infinity;
+let uploading = false, maxBytes = Infinity, queue = [];
 async function upload(files) {
-  if (uploading) { say("Es wird schon hochgeladen …"); return; }
-  const photos = [...files].filter(isPhoto), skipped = files.length - photos.length;
+  files = [...files];
+  if (uploading) { queue.push(...files); say(`${queue.length} weitere Dateien warten …`); return; }
+  const photos = files.filter(isPhoto), skipped = files.length - photos.length;
   if (!photos.length) { say(skipped ? "Keine Fotos dabei – BR öffnet JPEG, PNG, TIFF, HEIC und Raw-Dateien." : "", !!skipped); return; }
   uploading = true;
   const total = photos.reduce((s, f) => s + f.size, 0);
@@ -377,7 +450,8 @@ async function upload(files) {
   for (const [i, f] of photos.entries()) {
     try {
       if (f.size > maxBytes) throw new Error(`zu groß (höchstens ${maxBytes / 1048576} MB)`);
-      await put(f, (n) => say(`Lade hoch: ${i + 1} von ${photos.length} · ${Math.floor(((done + n) / Math.max(total, 1)) * 100)} %`));
+      const waiting = () => (queue.length ? ` · ${queue.length} weitere warten` : "");
+      await put(f, (n) => say(`Lade hoch: ${i + 1} von ${photos.length} · ${Math.floor(((done + n) / Math.max(total, 1)) * 100)} %${waiting()}`));
       ok++;
     } catch (e) { failed.push(f.name + ": " + e.message); }
     done += f.size;
@@ -386,6 +460,27 @@ async function upload(files) {
   if (failed.length) say(`${ok} hochgeladen, ${failed.length} nicht: ${failed.join(" · ")}`, true);
   else say(`${ok} ${ok === 1 ? "Foto" : "Fotos"} hochgeladen${skipped ? ` (${skipped} ${skipped === 1 ? "Datei" : "Dateien"} ohne Foto übersprungen)` : ""}. In BR: „Importieren“ → Strg+A → OK.`);
   refresh();
+  if (queue.length) { const more = queue; queue = []; upload(more); }
+}
+
+// Gezogene Ordner (eine Speicherkarte, ein Kamera-Ordner) werden durchsucht. Die Einträge müssen
+// noch während des Ablegens geholt werden, danach sind sie weg.
+function dropped(dt) {
+  const entries = [...(dt.items || [])].map((i) => i.webkitGetAsEntry?.()).filter(Boolean);
+  if (!entries.some((e) => e.isDirectory)) return Promise.resolve([...dt.files]);
+  const out = [];
+  const walk = async (e) => {
+    if (e.isFile) out.push(await new Promise((ok, fail) => e.file(ok, fail)));
+    else if (e.isDirectory && !e.name.startsWith(".")) {
+      const reader = e.createReader();
+      for (;;) {
+        const batch = await new Promise((ok, fail) => reader.readEntries(ok, fail));
+        if (!batch.length) break;
+        for (const c of batch) await walk(c);
+      }
+    }
+  };
+  return (async () => { for (const e of entries) await walk(e); return out; })();
 }
 
 $("pick").addEventListener("change", (e) => { upload(e.target.files); e.target.value = ""; });
@@ -401,10 +496,17 @@ function watchDrops(target) {
   target.addEventListener("dragenter", (e) => { if (hasFiles(e)) { depth++; $("drop").classList.add("on"); e.preventDefault(); } });
   target.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
   target.addEventListener("dragleave", () => { depth = Math.max(0, depth - 1); if (!depth) $("drop").classList.remove("on"); });
-  target.addEventListener("drop", (e) => { if (!hasFiles(e)) return; e.preventDefault(); depth = 0; $("drop").classList.remove("on"); upload(e.dataTransfer.files); });
+  target.addEventListener("drop", (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    depth = 0;
+    $("drop").classList.remove("on");
+    dropped(e.dataTransfer).then(upload, () => say("Der Ordner ließ sich nicht lesen.", true));
+  });
 }
 watchDrops(window);
 $("br").addEventListener("load", () => { try { watchDrops($("br").contentWindow); } catch (_) {} });
+connect();
 refresh();
 setInterval(() => { if (!document.hidden) refresh(); }, 8000);
 </script>
@@ -420,10 +522,17 @@ def main():
     a.add_argument("--bind", default="127.0.0.1")
     a.add_argument("--port", type=int, default=int(os.environ.get("BR_FILES_PORT", "6081")))
     a.add_argument("--max-mb", type=int, default=int(os.environ.get("BR_UPLOAD_MAX_MB", "2048")), help="größte Datei in MB")
+    a.add_argument(
+        "--vnc-passwort",
+        type=Path,
+        default=Path(os.environ.get("BR_VNC_PASSWORD_FILE") or Path.home() / ".br-web" / "vnc-passwort"),
+        help="die Datei, in die br-web das VNC-Passwort schreibt",
+    )
     args = a.parse_args()
     for d in (args.fotos, args.exporte):
         d.mkdir(parents=True, exist_ok=True)
     Handler.photos, Handler.exports, Handler.max_bytes = args.fotos.resolve(), args.exporte.resolve(), args.max_mb << 20
+    Handler.vnc_password_file = args.vnc_passwort
     server = ThreadingHTTPServer((args.bind, args.port), Handler)
     server.daemon_threads = True
     print(f"br-dateien: http://{args.bind}:{args.port}/ – Fotos {Handler.photos}, Exporte {Handler.exports}", file=sys.stderr)
