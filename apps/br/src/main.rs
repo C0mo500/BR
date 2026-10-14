@@ -22,6 +22,8 @@ USAGE
       $BR_LIBRARY, else ~/Pictures/BR Library; --demo opens LightCraft's demo photos in memory.
       BR_RENDERER=glow or =wgpu picks the window renderer; BR_WAYLAND=1 keeps native Wayland
       (by default BR uses X11 where it can, which is what makes dropping files work).
+      BR_IMPORT_DIR is the folder the import dialog opens in (see deploy/browser for a BR
+      on a server, used in the browser).
 
   br mcp [--library DIR | --demo] [--full] [FILES…]
       MCP server on stdio for AI agents (Claude Code: `claude mcp add br -- br mcp`).

@@ -364,7 +364,7 @@ fn open_dialog(app: &mut BrApp, ctx: &egui::Context, what: Pick, title: &str, st
 }
 
 fn import_dialog(app: &mut BrApp, ctx: &egui::Context) {
-    open_dialog(app, ctx, Pick::Photos, "Fotos importieren", None);
+    open_dialog(app, ctx, Pick::Photos, "Fotos importieren", desktop::import_dir());
 }
 
 fn poll_pick(app: &mut BrApp, ctx: &egui::Context) {

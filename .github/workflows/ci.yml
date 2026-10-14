@@ -24,3 +24,12 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell scripts
+        run: bash -n deploy/browser/br-web deploy/browser/install.sh && shellcheck deploy/browser/br-web deploy/browser/install.sh
+      - name: br-dateien
+        run: python3 -m unittest discover -s deploy/browser -v

@@ -61,6 +61,19 @@ pub enum Pick {
     Folder,
 }
 
+/// The folder BR's import dialog starts in: `$BR_IMPORT_DIR` (a hosted BR points it at the folder
+/// uploads arrive in), else the dialog's own choice.
+pub fn import_dir() -> Option<PathBuf> {
+    std::env::var_os("BR_IMPORT_DIR").filter(|d| !d.is_empty()).map(PathBuf::from)
+}
+
+/// `rfd` falls back to zenity on Linux when there is no desktop portal (a server display, for
+/// one). zenity has no starting folder, only a file to preselect; a name that is not there makes
+/// it open the folder with nothing selected. The portal ignores the name in open dialogs.
+fn zenity_start(dir: &std::path::Path) -> String {
+    dir.join(" ").to_string_lossy().into_owned()
+}
+
 /// Open a file dialog on its own thread; its answer arrives on the returned channel (empty when
 /// cancelled), and `ctx` is repainted then.
 pub fn pick(ctx: &egui::Context, what: Pick, title: &str, start: Option<PathBuf>) -> Result<Receiver<Vec<PathBuf>>, String> {
@@ -72,6 +85,9 @@ pub fn pick(ctx: &egui::Context, what: Pick, title: &str, start: Option<PathBuf>
         .spawn(move || {
             let mut d = FileDialog::new().set_title(&title);
             if let Some(dir) = start {
+                if cfg!(all(unix, not(target_os = "macos"))) {
+                    d = d.set_file_name(zenity_start(&dir));
+                }
                 d = d.set_directory(dir);
             }
             let chosen = match what {
@@ -268,6 +284,14 @@ mod tests {
         assert_eq!(explorer_select_arg(r"\\?\C:\long\x.jpg"), r#"/select,"C:\long\x.jpg""#);
         assert_eq!(explorer_select_arg(r"\\?\UNC\server\share\x.jpg"), r#"/select,"\\server\share\x.jpg""#);
         assert_eq!(explorer_select_arg("C:/a/b.jpg"), r#"/select,"C:\a\b.jpg""#);
+    }
+
+    #[test]
+    fn zenity_opens_inside_the_folder() {
+        let dir = std::path::Path::new("/srv/br/Eingang");
+        let name = zenity_start(dir);
+        assert_eq!(std::path::Path::new(&name).parent(), Some(dir));
+        assert!(!std::path::Path::new(&name).exists());
     }
 
     #[test]

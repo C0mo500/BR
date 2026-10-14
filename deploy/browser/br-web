@@ -1,0 +1,65 @@
+#!/bin/bash
+# BR im Browser: ein virtueller Bildschirm (Xvnc) mit dem BR-Fenster, ein Fenster-Manager, der es
+# bildschirmfüllend hält, und noVNC, das den Bildschirm über eine WebSocket-Verbindung in den
+# Browser bringt. Läuft als Dienst br-web (siehe br-web.service); die Einstellungen kommen aus
+# /etc/br-web.env.
+#
+# Der VNC-Server hört auf keinem Netzwerk-Port, nur auf einer Unix-Socket-Datei in diesem Dienst;
+# erreichbar ist BR allein über websockify auf 127.0.0.1 – und das gehört hinter einen
+# Reverse-Proxy mit HTTPS und Login (siehe README.md).
+set -euo pipefail
+
+: "${BR_DISPLAY:=:7}"
+: "${BR_GEOMETRY:=1600x1000}"
+: "${BR_NOVNC_PORT:=6080}"
+: "${BR_BIN:=/opt/br/bin/br}"
+: "${BR_SHARE:=/opt/br/share}"
+: "${BR_NOVNC_WEB:=/usr/share/novnc}"
+: "${BR_RUN_DIR:=${TMPDIR:-/tmp}/br-web}"
+: "${BR_IMPORT_DIR:=$HOME}"
+export BR_RENDERER="${BR_RENDERER:-glow}"
+export LIGHTCRAFT_GPU="${LIGHTCRAFT_GPU:-0}"
+
+# Kein Desktop-Portal auf dem Server-Bildschirm: Datei-Dialoge kommen von zenity.
+unset DBUS_SESSION_BUS_ADDRESS WAYLAND_DISPLAY
+
+display_no=${BR_DISPLAY#:}
+mkdir -p "$BR_RUN_DIR" "$BR_IMPORT_DIR"
+chmod 700 "$BR_RUN_DIR"
+vnc_socket=$BR_RUN_DIR/vnc.sock
+rm -f "$vnc_socket"
+
+trap 'kill $(jobs -p) 2>/dev/null; wait' EXIT
+
+Xvnc "$BR_DISPLAY" -desktop BR -geometry "$BR_GEOMETRY" -depth 24 \
+    -rfbport -1 -rfbunixpath "$vnc_socket" -rfbunixmode 0600 \
+    -SecurityTypes None -AlwaysShared -nolisten tcp -nolisten local &
+
+for _ in $(seq 100); do
+    [ -S "/tmp/.X11-unix/X$display_no" ] && [ -S "$vnc_socket" ] && break
+    sleep 0.1
+done
+if ! [ -S "/tmp/.X11-unix/X$display_no" ] || ! [ -S "$vnc_socket" ]; then
+    echo "br-web: der Bildschirm $BR_DISPLAY ist nicht gestartet" >&2
+    exit 1
+fi
+export DISPLAY=$BR_DISPLAY
+
+openbox --config-file "$BR_SHARE/openbox-rc.xml" &
+
+websockify --web "$BR_NOVNC_WEB" --heartbeat 30 "127.0.0.1:$BR_NOVNC_PORT" --unix-target "$vnc_socket" &
+
+# BR selbst: nach „Beenden“ (oder einem Absturz) startet es nach einer Sekunde neu, damit die
+# Seite im Browser immer etwas zeigt. Der Datei-Dialog öffnet sich im Upload-Ordner.
+(
+    cd "$BR_IMPORT_DIR"
+    while true; do
+        "$BR_BIN" || echo "br-web: BR endete mit Status $?" >&2
+        sleep 1
+    done
+) &
+
+# Endet einer der Teile (Bildschirm, Fenster-Manager, noVNC), startet systemd den ganzen Dienst neu.
+wait -n
+echo "br-web: ein Teil ist beendet, alles wird neu gestartet" >&2
+exit 1
