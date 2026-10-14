@@ -1,0 +1,15 @@
+[package]
+name = "br-photo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lightcraft-engine = { workspace = true }
+lightcraft-ui-egui = { workspace = true }
+lightcraft-mcp = { workspace = true }
+egui = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "glow", "accesskit", "wayland", "x11"] }
+serde = { workspace = true }
+serde_json = { workspace = true }

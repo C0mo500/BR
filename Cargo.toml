@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.95"
+
+[workspace.dependencies]
+# LightCraft (photo engine), pinned to one upstream commit
+lightcraft-engine = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
+lightcraft-ui-egui = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
+lightcraft-mcp = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
+egui = "0.36"
+eframe = { version = "0.36", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev]
+opt-level = 1
