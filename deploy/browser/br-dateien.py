@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """BR-Dateien: die Seite rund um BR im Browser.
 
-Zeigt BR (noVNC unter ``novnc/``, vom Reverse-Proxy an websockify weitergereicht) und nimmt Fotos
-entgegen: hochgeladene Fotos landen im Foto-Ordner, den der Import-Dialog von BR öffnet; Exporte
+Zeigt BR (noVNC unter ``novnc/``, vom Reverse-Proxy an websockify weitergereicht) und nimmt Fotos,
+Videos, Ton und Untertitel entgegen: hochgeladene Dateien landen im Foto-Ordner, den der Import-Dialog von BR öffnet; Exporte
 lassen sich einzeln oder als ZIP herunterladen. Das VNC-Passwort, das br-web bei jedem Start neu
 setzt, gibt es nur der eigenen Seite (``/api/vnc``).
 
@@ -29,6 +29,13 @@ PHOTO_EXTENSIONS = {
     "orf", "rw2", "rwl", "raw", "pef", "srw", "psd", "jxl", "gif", "bmp", "heic", "heif", "avif",
     "iiq", "crw", "mrw", "x3f", "kdc", "mos", "erf", "3fr", "fff",
 }  # fmt: skip
+# was BR (FilmCraft) für Videos nimmt: Video, Ton, Untertitel
+VIDEO_EXTENSIONS = {
+    "mp4", "m4v", "mov", "mkv", "webm", "avi", "mxf", "mts", "m2ts", "ts", "mpg", "mpeg", "3gp",
+    "mp3", "m4a", "aac", "wav", "aif", "aiff", "flac", "ogg", "opus",
+    "srt", "vtt", "scc",
+}  # fmt: skip
+MEDIA_EXTENSIONS = PHOTO_EXTENSIONS | VIDEO_EXTENSIONS
 CHUNK = 1 << 20
 # so viel Platz bleibt auf der Platte frei, auch nach einem Upload
 RESERVE = 512 << 20
@@ -73,11 +80,11 @@ def visible(name: str) -> bool:
     return not name.startswith(".")
 
 
-def list_photos(folder: Path) -> list:
+def list_photos(folder: Path, kinds=PHOTO_EXTENSIONS) -> list:
     out = []
     with os.scandir(folder) as it:
         for e in it:
-            if visible(e.name) and e.is_file(follow_symlinks=False) and extension(e.name) in PHOTO_EXTENSIONS:
+            if visible(e.name) and e.is_file(follow_symlinks=False) and extension(e.name) in kinds:
                 st = e.stat(follow_symlinks=False)
                 out.append({"name": e.name, "size": st.st_size, "mtime": int(st.st_mtime)})
     out.sort(key=lambda f: f["mtime"], reverse=True)
@@ -195,6 +202,7 @@ class Handler(BaseHTTPRequestHandler):
                 200,
                 {
                     "fotos": sum(1 for _ in list_photos(self.photos)),
+                    "videos": sum(1 for _ in list_photos(self.photos, VIDEO_EXTENSIONS)),
                     "exporte": exports[:MAX_LISTED],
                     "exporte_gesamt": len(exports),
                     "max_mb": self.max_bytes >> 20,
@@ -260,8 +268,8 @@ class Handler(BaseHTTPRequestHandler):
         name = safe_name(path.removeprefix("/api/fotos/"))
         if not name:
             return self.refuse(400, "Kein gültiger Dateiname")
-        if extension(name) not in PHOTO_EXTENSIONS:
-            return self.refuse(415, f"„{name}“ ist kein Foto, das BR öffnen kann")
+        if extension(name) not in MEDIA_EXTENSIONS:
+            return self.refuse(415, f"„{name}“ ist weder Foto noch Video, das BR öffnen kann")
         if self.headers.get("Transfer-Encoding") or self.headers.get("Content-Length") is None:
             return self.refuse(411, "Größe fehlt")
         try:
@@ -300,7 +308,7 @@ INDEX = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BR Foto</title>
+<title>BR</title>
 <style>
 :root { --bg: #161616; --bar: #232323; --line: #333; --text: #e8e8e8; --dim: #9a9a9a; --accent: #1fc8b4; --bad: #ff6b6b; }
 * { box-sizing: border-box; }
@@ -335,8 +343,8 @@ aside .actions { padding: 10px 14px; display: flex; gap: 8px; border-bottom: 1px
 </head>
 <body>
 <header>
-  <div class="brand"><b>BR</b> <span>Foto</span></div>
-  <label class="button primary" for="pick">Fotos hochladen</label>
+  <div class="brand"><b>BR</b> <span>Foto · Video</span></div>
+  <label class="button primary" for="pick" title="Fotos, Videos, Musik und Untertitel">Hochladen</label>
   <input id="pick" type="file" multiple hidden>
   <div id="status"></div>
   <button id="exports">Exporte<span class="count" id="n">0</span></button>
@@ -350,7 +358,7 @@ aside .actions { padding: 10px 14px; display: flex; gap: 8px; border-bottom: 1px
     <div id="list"></div>
     <div class="hint" id="photos"></div>
   </aside>
-  <div id="drop">Fotos hier ablegen zum Hochladen</div>
+  <div id="drop">Fotos und Videos hier ablegen zum Hochladen</div>
 </main>
 <script>
 "use strict";
@@ -421,9 +429,9 @@ async function refresh() {
       list.append(a);
     }
     const note = (text) => { const p = document.createElement("div"); p.className = "hint"; p.textContent = text; list.append(p); };
-    if (!d.exporte.length) note("Noch keine Exporte. In BR: Export → Exportieren.");
+    if (!d.exporte.length) note("Noch keine Exporte. In BR: „Exportieren“ oben rechts.");
     else if (d.exporte_gesamt > d.exporte.length) note(`Die neuesten ${d.exporte.length} von ${d.exporte_gesamt}; alle zusammen gibt es als ZIP.`);
-    $("photos").textContent = d.fotos + " Fotos auf dem Server. Hochgeladene Fotos bleiben dort: BR bearbeitet sie, ohne das Original zu verändern.";
+    $("photos").textContent = `${d.fotos} Fotos und ${d.videos} Videos auf dem Server. Hochgeladenes bleibt dort: BR bearbeitet es, ohne das Original zu verändern.`;
     if ($("status").textContent === LIST_ERR) say("");
   } catch (e) {
     if (!uploading && (!$("status").textContent || $("status").textContent === LIST_ERR)) say(LIST_ERR, true);
@@ -452,7 +460,7 @@ async function upload(files, sum = { ok: 0, failed: [], skipped: 0 }) {
   if (uploading) { queue.push(...files); say(`${queue.length} weitere Dateien warten …`); return; }
   const photos = files.filter(isPhoto), skipped = sum.skipped + files.length - photos.length;
   if (!photos.length && !sum.ok && !sum.failed.length) {
-    say(skipped ? "Keine Fotos dabei – BR öffnet JPEG, PNG, TIFF, HEIC und Raw-Dateien." : "", !!skipped);
+    say(skipped ? "Weder Fotos noch Videos dabei – BR öffnet JPEG, PNG, HEIC, Raw, MP4, MOV, MKV, Musik und SRT." : "", !!skipped);
     return;
   }
   uploading = true;
@@ -470,7 +478,7 @@ async function upload(files, sum = { ok: 0, failed: [], skipped: 0 }) {
   uploading = false;
   if (queue.length) { const more = queue; queue = []; return upload(more, { ok, failed, skipped }); }
   if (failed.length) say(`${ok} hochgeladen, ${failed.length} nicht: ${failed.join(" · ")}`, true);
-  else say(`${ok} ${ok === 1 ? "Foto" : "Fotos"} hochgeladen${skipped ? ` (${skipped} ${skipped === 1 ? "Datei" : "Dateien"} ohne Foto übersprungen)` : ""}. In BR: „Importieren“ → Strg+A → OK.`);
+  else say(`${ok} ${ok === 1 ? "Datei" : "Dateien"} hochgeladen${skipped ? ` (${skipped} andere übersprungen)` : ""}. In BR: Videos mit „+ Medien“ auf „Schnitt“, Fotos auf „Foto“ mit Importieren.`);
   refresh();
 }
 
@@ -523,12 +531,12 @@ setInterval(() => { if (!document.hidden) refresh(); }, 8000);
 </script>
 </body>
 </html>
-""".replace("__EXTENSIONS__", json.dumps(sorted(PHOTO_EXTENSIONS)))
+""".replace("__EXTENSIONS__", json.dumps(sorted(MEDIA_EXTENSIONS)))
 
 
 def main():
     a = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    a.add_argument("--fotos", type=Path, default=Path(os.environ.get("BR_IMPORT_DIR", "/srv/br/Fotos")), help="Ordner für hochgeladene Fotos")
+    a.add_argument("--fotos", type=Path, default=Path(os.environ.get("BR_IMPORT_DIR", "/srv/br/Fotos")), help="Ordner für hochgeladene Fotos und Videos")
     a.add_argument("--exporte", type=Path, default=Path(os.environ.get("BR_EXPORTS", "/srv/br/Exporte")), help="der Export-Ordner von BR")
     a.add_argument("--bind", default="127.0.0.1")
     a.add_argument("--port", type=int, default=int(os.environ.get("BR_FILES_PORT", "6081")))

@@ -73,9 +73,10 @@ class Server(unittest.TestCase):
         (self.exports / "sub" / "b.jpg").write_bytes(b"b")
         (self.exports / ".versteckt.jpg").write_bytes(b"x")
         (self.photos / "a.jpg").write_bytes(b"a")
+        (self.photos / "clip.MOV").write_bytes(b"v")
         (self.photos / "notiz.txt").write_bytes(b"n")
         d = json.loads(self.request("GET", "/api/dateien")[1])
-        self.assertEqual(d["fotos"], 1)
+        self.assertEqual((d["fotos"], d["videos"]), (1, 1))
         self.assertEqual([f["path"] for f in d["exporte"]], ["sub/b.jpg"])
         self.assertEqual((d["exporte_gesamt"], d["max_mb"]), (1, 1))
 
@@ -119,6 +120,11 @@ class Server(unittest.TestCase):
             self.assertEqual(json.loads(body)["name"], saved)
         self.assertEqual(sorted(os.listdir(self.dir)), ["Exporte", "Fotos"])
         self.assertEqual(sorted(os.listdir(self.photos)), ["hidden.jpg", "x.jpg", "y.jpg", "z.nef"])
+
+    def test_videos_music_and_subtitles_are_taken_too(self):
+        for name in ["IMG_0001.MOV", "clip.mp4", "song.m4a", "subs.srt"]:
+            self.assertEqual(self.upload(name, b"x")[0].status, 201, name)
+        self.assertEqual(sorted(os.listdir(self.photos)), ["IMG_0001.MOV", "clip.mp4", "song.m4a", "subs.srt"])
 
     def test_uploads_that_are_refused(self):
         self.assertEqual(self.upload("a.jpg", headers={})[0].status, 403, "without the page's header")
