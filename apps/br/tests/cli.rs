@@ -196,3 +196,38 @@ fn a_failed_import_stops_before_any_command() {
     assert!(lines(&o.stdout).is_empty(), "no command ran on another photo");
     assert!(String::from_utf8_lossy(&o.stderr).contains("could not import"));
 }
+
+/// Only the window keeps LightCraft's settings and a log file: the command line, `br snapshot`
+/// and a `--demo` window write nothing into BR's folders (`BR_CONFIG_DIR` puts them in `profile`).
+#[test]
+fn only_the_window_keeps_settings_and_a_log() {
+    let dir = temp("profile");
+    let profile = dir.join("profile");
+    let shot = dir.join("shot.png");
+    let quiet = |c: &mut Command| c.env("BR_CONFIG_DIR", &profile).output().unwrap();
+    assert!(quiet(br().args(["run", "--demo", "br.look", "look=lc.moody", "br.state"])).status.success());
+    assert!(quiet(br().args(["snapshot", "--demo", "--size", "500x300", "-o"]).arg(&shot)).status.success());
+    assert!(quiet(br().arg("photo").arg(&shot).arg("-o").arg(dir.join("out.jpg"))).status.success());
+    assert!(quiet(br().arg("looks")).status.success());
+    assert!(!profile.exists(), "the command line wrote into BR's folders");
+    // the window, without a display: it can't open, but has started its log by then
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let window = |args: &[&str]| {
+            let o = quiet(br().args(args).env_remove("DISPLAY").env_remove("WAYLAND_DISPLAY").env_remove("WAYLAND_SOCKET"));
+            assert!(!o.status.success());
+            assert!(String::from_utf8_lossy(&o.stderr).contains("could not open the window"), "{}", String::from_utf8_lossy(&o.stderr));
+        };
+        window(&["--demo"]);
+        assert!(!profile.exists(), "a --demo window wrote into BR's folders");
+        let lib = dir.join("lib");
+        window(&["--library", &lib.to_string_lossy()]);
+        let log = std::fs::read_to_string(profile.join("Logs").join("br.log")).unwrap();
+        assert!(log.contains("log file") && log.contains("could not open the window"), "{log}");
+        window(&["--library", &lib.to_string_lossy()]);
+        assert!(profile.join("Logs").join("br.1.log").exists(), "the previous log is kept");
+        // nothing changed in the window, so no settings file
+        assert!(!profile.join("lightcraft-ui.json").exists());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

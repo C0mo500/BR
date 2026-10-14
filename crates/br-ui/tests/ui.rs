@@ -50,7 +50,7 @@ fn open(app: &mut BrApp, d: &mut Driver, p: Popover) {
 
 #[test]
 fn the_photo_page_is_all_of_lightcraft_with_brs_quick_tools() {
-    let (mut app, mut d) = app();
+    let (app, d) = app();
     assert_eq!(app.page, Page::Foto);
     let texts = d.texts();
     // BR's header ...

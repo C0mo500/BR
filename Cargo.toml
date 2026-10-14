@@ -22,11 +22,20 @@ lightcraft-mcp = { git = "https://github.com/storytold/lightcraft", rev = "a4b53
 lightcraft-geom = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
 lightcraft-raster = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
 lightcraft-codecs = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
+lightcraft-sysmem = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
 
 # ui (same versions as LightCraft)
 egui = "0.36"
 eframe = { version = "0.36", default-features = false }
 rfd = "0.17"
+# the window's desktop services (as in LightCraft's desktop app). Linux: the desktop's dark/light
+# setting (XDG settings portal) and the display's ICC profile (colord); pure Rust, the version
+# accesskit already brings in, pinned to it.
+zbus = "=5.19.0"
+# macOS: the profile of the screen showing the window (safe AppKit bindings; wgpu uses the same)
+objc2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSColorSpace", "NSResponder", "NSScreen", "NSWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData"] }
 
 # foundation
 serde = { version = "1", features = ["derive"] }

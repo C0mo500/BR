@@ -1,5 +1,7 @@
 //! `br`: BR's window and command line.
 
+mod logging;
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -9,8 +11,10 @@ use br_photo::adjust::Slider;
 use br_photo::crop::Format;
 use br_photo::export::{Preset, Target};
 use br_photo::{commands, library};
+use br_ui::desktop::prefs;
 use lightcraft_engine::Session;
 use lightcraft_mcp::{Backend, Headless, expand_paths};
+use lightcraft_ui_egui::UiState;
 use serde_json::{Value, json};
 
 const USAGE: &str = "\
@@ -19,11 +23,15 @@ BR — eine Media-Suite: DaVinci-Umfang, so direkt bedienbar wie CapCut. Seiten:
 USAGE
   br [--library DIR | --demo] [FILES…]
       Open the window. FILES (photos or folders) are imported. The library is DIR, else
-      $BR_LIBRARY, else ~/Pictures/BR Library; --demo opens LightCraft's demo photos in memory.
+      $BR_LIBRARY, else the library last opened in the window, else ~/Pictures/BR Library;
+      --demo opens LightCraft's demo photos in memory and saves nothing.
       BR_RENDERER=glow or =wgpu picks the window renderer; BR_WAYLAND=1 keeps native Wayland
       (by default BR uses X11 where it can, which is what makes dropping files work).
       BR_IMPORT_DIR is the folder the import dialog opens in (see deploy/browser for a BR
       on a server, used in the browser).
+      The window keeps LightCraft's settings in BR's settings folder (Linux: ~/.config/BR) and
+      its log in BR's log folder (Linux: ~/.local/share/BR/Logs; Help ▸ Open Log Folder).
+      BR_CONFIG_DIR=DIR keeps both in DIR; set empty, nothing is kept.
 
   br mcp [--library DIR | --demo] [--full] [FILES…]
       MCP server on stdio for AI agents (Claude Code: `claude mcp add br -- br mcp`).
@@ -47,24 +55,11 @@ USAGE
   br snapshot [--library DIR | --demo] [--popover looks|format|export]
               [-o OUT.png] [--size WxH] [--scale S] [FILES…]
       Draw the window without a display (no GPU needed) into a PNG.
+
+  Logging goes to standard error (and the window's log file), never to standard output:
+  warnings, and information from BR and LightCraft. BR_LOG=debug|info|warn sets the level of
+  BR's and LightCraft's own records, else RUST_LOG takes env_logger directives.
 ";
-
-/// Warnings and errors to stderr (stdout is reserved for results and the MCP protocol).
-struct StderrLog;
-
-impl log::Log for StderrLog {
-    fn enabled(&self, m: &log::Metadata) -> bool {
-        m.level() <= log::Level::Warn || (m.target().starts_with("br") && m.level() <= log::Level::Info)
-    }
-    fn log(&self, r: &log::Record) {
-        if self.enabled(r.metadata()) {
-            eprintln!("[{}] {}: {}", r.level(), r.target(), r.args());
-        }
-    }
-    fn flush(&self) {}
-}
-
-static LOGGER: StderrLog = StderrLog;
 
 /// Print to stdout. When the reader went away (`br looks | head -2`), stop quietly.
 fn out(text: impl std::fmt::Display) -> Result<(), String> {
@@ -80,13 +75,26 @@ fn outln(text: impl std::fmt::Display) -> Result<(), String> {
     out(format!("{text}\n"))
 }
 
+/// Give memory the system allocator keeps after frees back to the system, which LightCraft asks
+/// for after big decodes (`lightcraft_engine::memory::set_release_hook`, as LightCraft's apps
+/// install it): macOS keeps freed large blocks resident until it runs short.
+fn release_free_memory() {
+    let _ = lightcraft_sysmem::release_free_memory();
+}
+
 fn main() {
-    let _ = log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Info));
+    // first, so every start-up record is kept for the window's log file (`logging`)
+    let logger = logging::install();
+    lightcraft_engine::memory::set_release_hook(release_free_memory);
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (cmd, rest) = match args.first().map(String::as_str) {
         Some("mcp" | "photo" | "run" | "commands" | "looks" | "snapshot" | "app" | "help") => (args[0].clone(), args[1..].to_vec()),
         _ => ("app".to_string(), args),
     };
+    // only the window keeps a log file
+    if let Some(logger) = logger.filter(|_| cmd != "app") {
+        logger.no_file();
+    }
     let r = match cmd.as_str() {
         "help" => out(USAGE),
         _ if rest.iter().any(|a| a == "--help" || a == "-h") => out(USAGE),
@@ -97,9 +105,12 @@ fn main() {
         "commands" => commands::COMMANDS.iter().try_for_each(|(id, label, params)| outln(format!("{id:<12} {label}\n             {params}"))),
         "looks" => looks(&rest),
         "snapshot" => snapshot(&rest),
-        _ => window(&rest),
+        _ => window(&rest, logger),
     };
     if let Err(e) = r {
+        if let Some(logger) = logger.filter(|_| cmd == "app") {
+            logger.record_error(&e);
+        }
         eprintln!("br: {e}");
         std::process::exit(1);
     }
@@ -218,7 +229,71 @@ fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
     p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into())
 }
 
-fn window(args: &[String]) -> Result<(), String> {
+/// The window: BR, and the writer that keeps LightCraft's settings for the next start
+/// (`br_ui::desktop::prefs`): as soon as the library changes, every few seconds when anything
+/// else changed, and when the window closes.
+struct Window(br_ui::BrApp, prefs::PrefsWriter);
+
+impl eframe::App for Window {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        eframe::App::logic(&mut self.0, ctx, frame);
+        self.1.tick(&mut self.0.lc, ctx);
+    }
+
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        eframe::App::raw_input_hook(&mut self.0, ctx, raw);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        eframe::App::ui(&mut self.0, ui, frame);
+    }
+
+    fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+        // first: BR's own exit ends the process on macOS
+        if let Err(e) = self.1.save(&self.0.lc) {
+            log::error!("{e}");
+        }
+        eframe::App::on_exit(&mut self.0, gl);
+    }
+}
+
+/// Start the window's log file in BR's log folder (the previous ones move up to `br.1.log` …);
+/// its path, or `None` when this run keeps none: `--demo` writes nothing, and `BR_CONFIG_DIR`
+/// set empty (or no home folder) means there is no log folder.
+fn open_log(logger: &logging::AppLogger, demo: bool) -> Option<PathBuf> {
+    match br_ui::desktop::log_dir().filter(|_| !demo) {
+        Some(dir) => match logger.attach_dir(&dir) {
+            Ok(path) => {
+                log::info!("BR {}, log file {}", env!("CARGO_PKG_VERSION"), path.display());
+                Some(path)
+            }
+            // the file sink has given up by now, so this goes to standard error only
+            Err(e) => {
+                log::warn!("no log file: {e}");
+                None
+            }
+        },
+        None => {
+            logger.no_file();
+            None
+        }
+    }
+}
+
+/// Where LightCraft's panic guard writes its report: `br-panics.log` beside the log file, or in
+/// `temp` when this run keeps no log (nothing of the user's is written then).
+fn panic_log_path(log_file: Option<&Path>, temp: PathBuf) -> PathBuf {
+    log_file.and_then(Path::parent).map_or(temp, Path::to_path_buf).join("br-panics.log")
+}
+
+/// The library the window opens: `--library`, else the one last opened in the window (LightCraft's
+/// Settings ▸ Open Library…, kept in its settings) unless `$BR_LIBRARY` names one, else `None`:
+/// BR's default library ([`open_session`]).
+fn launch_library(cli: Option<PathBuf>, saved: Option<&UiState>, br_library_set: bool) -> Option<PathBuf> {
+    cli.or_else(|| saved.map(|u| u.settings.library_path.as_str()).filter(|p| !p.trim().is_empty() && !br_library_set).map(PathBuf::from))
+}
+
+fn window(args: &[String], logger: Option<&'static logging::AppLogger>) -> Result<(), String> {
     let mut opts = Opts::default();
     let rest = library_opts(args, &mut opts)?;
     if let Some(bad) = rest.iter().find(|a| a.starts_with('-')) {
@@ -232,7 +307,31 @@ fn window(args: &[String]) -> Result<(), String> {
         Some("wgpu") | None => eframe::Renderer::Wgpu,
         Some(other) => return Err(format!("BR_RENDERER={other}: use glow or wgpu")),
     };
-    let (session, lib, problem) = open_session(&opts, true);
+    // the log file, once the arguments are fine: a usage error leaves none behind
+    let log_file = logger.and_then(|l| open_log(l, opts.demo));
+    // a panic leaves a trace: on standard error and in br-panics.log (LightCraft's engine guard),
+    // and in the log file
+    lightcraft_engine::guard::install_hook(panic_log_path(log_file.as_deref(), std::env::temp_dir()));
+    if let Some(logger) = logger {
+        logging::record_panics(logger);
+    }
+    // LightCraft's settings from the last run, read with --demo too (so it looks like the user's
+    // BR) but never written then
+    let demo = opts.demo;
+    let prefs_path = prefs::path();
+    let (saved, prefs_warning, keep_prefs_file) = match &prefs_path {
+        Some(p) => prefs::load_prefs_at(p, !demo),
+        None => (None, None, false),
+    };
+    if !demo {
+        let br_library_set = std::env::var_os("BR_LIBRARY").is_some_and(|d| !d.is_empty());
+        opts.library = launch_library(opts.library.take(), saved.as_ref(), br_library_set);
+    }
+    // GPU rendering is off from the start when the settings say so: nothing creates the device
+    lightcraft_engine::gpu::set_enabled(saved.as_ref().is_none_or(|u| u.settings.gpu));
+    let (mut session, lib, problem) = open_session(&opts, true);
+    // the window works on its UI thread: Add to Apple Photos runs on a worker (as in LightCraft)
+    session.apple_photos_background = true;
     // set once eframe has made the window and its renderer: failures after that are not the
     // renderer's start, and are never answered with a restart
     let up = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -243,7 +342,16 @@ fn window(args: &[String]) -> Result<(), String> {
             native_options(renderer),
             Box::new(move |cc| {
                 came_up.store(true, std::sync::atomic::Ordering::Relaxed);
-                let mut app = br_ui::BrApp::with_services(session, lib, br_ui::desktop::services(&cc.egui_ctx));
+                let mut app = br_ui::BrApp::with_services(session, lib, br_ui::desktop::services(cc, log_file.as_deref()));
+                // the settings from the last run replace BR's defaults (German, for one)
+                if let Some(ui) = saved {
+                    app.lc.ui = ui;
+                }
+                app.lc.notices.extend(prefs_warning);
+                // the window says when there is no GPU to render with (headless runs don't)
+                app.lc.gpu_notice = true;
+                // what is on disk now: only changes are written, and nothing at all with --demo
+                let writer = prefs::PrefsWriter::new(prefs_path.filter(|_| !demo), &app.lc.ui, keep_prefs_file);
                 match problem {
                     // the photos are imported once the user decides what to do about the library
                     Some((dir, e)) => app.library_problem(dir, e, files),
@@ -254,7 +362,7 @@ fn window(args: &[String]) -> Result<(), String> {
                     }
                     None => {}
                 }
-                Ok(Box::new(app))
+                Ok(Box::new(Window(app, writer)))
             }),
         )
     }));
@@ -556,4 +664,33 @@ fn snapshot(args: &[String]) -> Result<(), String> {
     std::fs::write(&out, png).map_err(|e| format!("{}: {e}", out.display()))?;
     app.on_exit();
     outln(out.display())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--library` first; then the library last opened in the window, unless `$BR_LIBRARY` names
+    /// one (as `LIGHTCRAFT_LIBRARY` does for LightCraft); else BR's default (`None` here).
+    #[test]
+    fn the_window_reopens_the_library_it_had_open() {
+        let mut saved = UiState::default();
+        saved.settings.library_path = "/Volumes/Photos/Trip".into();
+        let cli = || Some(PathBuf::from("/tmp/cli"));
+        assert_eq!(launch_library(cli(), Some(&saved), false), cli());
+        assert_eq!(launch_library(None, Some(&saved), false), Some(PathBuf::from("/Volumes/Photos/Trip")));
+        assert_eq!(launch_library(None, Some(&saved), true), None);
+        assert_eq!(launch_library(None, None, false), None);
+        // never opened one: BR's default
+        saved.settings.library_path = " ".into();
+        assert_eq!(launch_library(None, Some(&saved), false), None);
+    }
+
+    #[test]
+    fn the_panic_report_goes_beside_the_log_or_to_the_temp_folder() {
+        let temp = PathBuf::from("/tmp");
+        let log = Path::new("/home/anna/.local/share/BR/Logs/br.log");
+        assert_eq!(panic_log_path(Some(log), temp.clone()), PathBuf::from("/home/anna/.local/share/BR/Logs/br-panics.log"));
+        assert_eq!(panic_log_path(None, temp.clone()), temp.join("br-panics.log"));
+    }
 }
