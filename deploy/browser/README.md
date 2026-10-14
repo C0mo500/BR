@@ -45,8 +45,11 @@ Ein zweiter Lauf nach `git pull` aktualisiert BR; Einstellungen und Fotos bleibe
 
 **Caddy** (holt das Zertifikat selbst): [`Caddyfile.example`](Caddyfile.example) übernehmen, das
 Passwort mit `caddy hash-password` erzeugen und eintragen, `systemctl reload caddy`. Eine eigene
-Subdomain (`br.example.org`) ist am einfachsten; ein Pfad einer bestehenden Domain
-(`example.org/br/`) geht auch, die Vorlage zeigt beides.
+Subdomain (`br.example.org`) ist am einfachsten und am sichersten. Ein Pfad einer bestehenden
+Domain (`example.org/br/`) geht auch, die Vorlage zeigt beides – aber dann teilt BR den Ursprung
+mit allem anderen auf dieser Domain: jede Seite dort (auch eine mit Sicherheitslücke oder mit
+hochgeladenem HTML) kann BR bedienen. Den Pfad nur nehmen, wenn die Domain sonst nichts
+ausliefert, dem man nicht voll traut.
 
 **nginx**: den Block aus [`nginx.conf.example`](nginx.conf.example) in den `server`-Block mit HTTPS
 einfügen, die Login-Datei mit `htpasswd -c /etc/nginx/br.htpasswd NAME` anlegen,

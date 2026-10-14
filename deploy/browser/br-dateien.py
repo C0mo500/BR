@@ -383,20 +383,22 @@ async function connect() {
   const https = location.protocol === "https:";
   const p = new URLSearchParams({ autoconnect: 1, resize: "remote", reconnect: 1, reconnect_delay: 2000, quality: 8, compression: 2,
     host: location.hostname, port: location.port || (https ? 443 : 80), encrypt: https ? 1 : 0, shared: 1, view_only: 0, repeaterID: "",
-    path: base.slice(1) + "novnc/websockify", password });
+    logging: "warn", view_clip: 0, path: base.slice(1) + "novnc/websockify", password });
   // ersetzen statt neu laden: sonst landet jedes Wiederverbinden im Verlauf, und „Zurück“ verließe BR nicht
   $("br").contentWindow.location.replace(`${here}novnc/vnc.html?n=${++loads}#${p}`);
 }
 // noVNC versucht nach einem Abbruch nur einmal neu zu verbinden. Ist BR neu gestartet (neues
 // Passwort), der Laptop aufgewacht oder das Netz zurück, lädt die Seite noVNC selbst neu.
-const LIVE = ["noVNC_connected", "noVNC_connecting", "noVNC_reconnecting", "noVNC_disconnecting", "noVNC_loading"];
-let down = 0;
+// Bleibt noVNC beim Laden hängen (ein Fehler beim Start), versucht sie es nach einer Minute neu.
+const LIVE = ["noVNC_connected", "noVNC_connecting", "noVNC_reconnecting", "noVNC_disconnecting"];
+let down = 0, loading = 0;
 setInterval(() => {
   if (document.hidden) return;
   let cls = null;
   try { cls = $("br").contentDocument?.documentElement?.classList; } catch (_) { return; }
-  down = cls && LIVE.some((c) => cls.contains(c)) ? 0 : down + 1;
-  if (down >= 2) { down = 0; connect(); }
+  loading = cls?.contains("noVNC_loading") ? loading + 1 : 0;
+  down = cls && (LIVE.some((c) => cls.contains(c)) || (loading && loading < 20)) ? 0 : down + 1;
+  if (down >= 2) { down = 0; loading = 0; connect(); }
 }, 3000);
 
 async function refresh() {

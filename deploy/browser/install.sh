@@ -126,6 +126,7 @@ cat <<EOF
 
 Fertig. Jetzt den Reverse-Proxy einrichten (HTTPS + Login), siehe $here/README.md:
   /         -> 127.0.0.1:${BR_FILES_PORT:-6081}   (Seite, Upload, Exporte)
-  /novnc/*  -> 127.0.0.1:${BR_NOVNC_PORT:-6080}   (Präfix /novnc entfernen; WebSocket;
-                                     fremde Origin-Header abweisen)
+  /novnc/*  -> 127.0.0.1:${BR_NOVNC_PORT:-6080}   (Präfix /novnc entfernen; WebSocket; fremde
+                                     Origin-Header und Sec-Fetch-Site cross-site/same-site
+                                     mit 403 abweisen – siehe README, "Wichtig in jedem Proxy")
 EOF

@@ -1,6 +1,7 @@
 # BR im Browser hinter nginx: in den server-Block mit HTTPS (z. B. von certbot) einfügen.
 # Login-Datei anlegen:  htpasswd -c /etc/nginx/br.htpasswd ich   (Paket apache2-utils)
-# Hier unter https://example.org/br/ – für eine eigene Subdomain überall /br/ durch / ersetzen.
+# Hier unter https://example.org/br/ – für eine eigene Subdomain (sicherer: unter einem Pfad teilt BR
+# den Ursprung mit allem anderen auf der Domain, siehe README) überall /br/ durch / ersetzen.
 # "^~": Regex-Blöcke, die im server-Block schon stehen (etwa für .js oder .jpg), greifen hier nicht.
 
 location = /br { return 301 /br/; }
