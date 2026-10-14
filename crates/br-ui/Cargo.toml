@@ -1,0 +1,22 @@
+[package]
+name = "br-ui"
+description = "BR's window: the simple, CapCut-style photo editor (Einfach) with LightCraft's full interface one click away (Pro)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+br-photo = { workspace = true }
+lightcraft-engine = { workspace = true }
+lightcraft-ui-egui = { workspace = true }
+lightcraft-raster = { workspace = true }
+lightcraft-codecs = { workspace = true }
+egui = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "glow", "accesskit", "wayland", "x11"] }
+rfd = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+
+[lints]
+workspace = true

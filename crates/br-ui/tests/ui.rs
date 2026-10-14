@@ -1,0 +1,189 @@
+//! BR's window driven headlessly on LightCraft's demo photos: clicks, drags and keys in, the
+//! session's state and painted pixels out. Set `BR_SNAPSHOT_DIR` to also write screenshots.
+
+use std::time::Duration;
+
+use br_photo::crop::{self, Format};
+use br_photo::looks;
+use br_ui::headless::{Driver, png};
+use br_ui::{BrApp, Mode, Tab};
+use lightcraft_ui_egui::state::{RightPanel, ViewMode};
+
+const SETTLE: Duration = Duration::from_secs(90);
+
+fn app() -> (BrApp, Driver) {
+    lightcraft_engine::gpu::set_enabled(false);
+    let mut app = BrApp::new(br_photo::library::demo_session(), None);
+    app.lc.ui.settings.gpu = false;
+    let mut d = Driver::new([1280.0, 800.0], 1.0);
+    assert!(d.settle(&mut app, SETTLE), "the first frames settle");
+    (app, d)
+}
+
+fn snapshot(d: &Driver, name: &str) {
+    if let Some(dir) = std::env::var_os("BR_SNAPSHOT_DIR") {
+        let path = std::path::Path::new(&dir).join(format!("{name}.png"));
+        std::fs::write(&path, png(&d.paint())).unwrap();
+    }
+}
+
+/// How different the pixels of an image are: 0 for a single colour.
+fn variety(img: &egui::ColorImage) -> usize {
+    let mut seen = std::collections::HashSet::new();
+    for p in img.pixels.iter().step_by(97) {
+        seen.insert(p.to_array());
+    }
+    seen.len()
+}
+
+#[test]
+fn simple_mode_shows_the_photo_the_tabs_and_the_filmstrip() {
+    let (mut app, mut d) = app();
+    assert_eq!(app.mode, Mode::Simple);
+    let texts = d.texts();
+    for t in ["Looks", "Anpassen", "Format", "Export", "Einfach", "Pro", "Exportieren"] {
+        assert!(texts.iter().any(|x| x.contains(t)), "`{t}` not drawn: {texts:?}");
+    }
+    let id = app.lc.session.active().unwrap();
+    assert!(app.lc.renderer.textures.get(&lightcraft_ui_egui::render::Slot::Main).is_some_and(|t| t.photo == id), "the preview rendered");
+    assert!(app.widgets.contains_key(&format!("photo.{}", id.0)));
+    let img = d.paint();
+    assert_eq!(img.size, [1280, 800]);
+    assert!(variety(&img) > 200, "a photo, not a blank window");
+    snapshot(&d, "1-looks");
+
+    for tab in [Tab::Adjust, Tab::Format, Tab::Export] {
+        d.click(&mut app, &format!("tab.{}", tab.key())).unwrap();
+        assert!(d.settle(&mut app, SETTLE));
+        assert_eq!(app.simple.tab, tab);
+        snapshot(&d, &format!("{}-{}", tab as usize + 1, tab.key()));
+    }
+}
+
+#[test]
+fn a_look_is_one_tap_and_its_amount_one_undo_step() {
+    let (mut app, mut d) = app();
+    let id = app.lc.session.active().unwrap();
+    let undo0 = app.lc.session.undo.len();
+    d.click(&mut app, "look.lc.warm-glow").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    let l = looks::current(&app.simple.br.look, &app.lc.session, id).expect("look applied");
+    assert_eq!((l.preset_id.as_str(), l.amount), ("lc.warm-glow", 100.0));
+    assert_eq!(app.lc.session.undo.len(), undo0 + 1);
+    snapshot(&d, "look-applied");
+
+    // drag the Amount slider to the left
+    let r = app.widgets["look.amount"];
+    d.drag(&mut app, r.center(), egui::pos2(r.left() + r.width() * 0.2, r.center().y), 6);
+    assert!(d.settle(&mut app, SETTLE));
+    let l = looks::current(&app.simple.br.look, &app.lc.session, id).expect("still the current look");
+    assert!(l.amount < 60.0, "amount {}", l.amount);
+    assert_eq!(app.lc.session.undo.len(), undo0 + 1, "the drag replaced the look's step");
+    assert!(app.lc.session.interaction.is_none());
+
+    // "Original" takes it off again
+    d.click(&mut app, "look.original").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(looks::current(&app.simple.br.look, &app.lc.session, id).map(|l| l.amount), Some(0.0));
+}
+
+#[test]
+fn sliders_drag_as_one_undo_step_and_undo_from_the_keyboard() {
+    let (mut app, mut d) = app();
+    let id = app.lc.session.active().unwrap();
+    d.click(&mut app, "tab.adjust").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    let undo0 = app.lc.session.undo.len();
+    let before = app.lc.session.develop_of(id).unwrap();
+    let r = app.widgets["slider.light"];
+    d.drag(&mut app, r.center(), egui::pos2(r.left() + r.width() * 0.8, r.center().y), 8);
+    assert!(d.settle(&mut app, SETTLE));
+    let light = br_photo::adjust::values(&app.lc.session, id)[0].1;
+    assert!(light > 30.0, "Licht {light}");
+    assert_eq!(app.lc.session.undo.len(), undo0 + 1);
+    assert_eq!(app.lc.session.undo.last().unwrap().label, "Licht");
+    snapshot(&d, "adjust-dragged");
+
+    // Ctrl+Z is BR's undo, not LightCraft's too (one step, not two)
+    d.key(&mut app, egui::Key::Z, egui::Modifiers::COMMAND);
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(app.lc.session.undo.len(), undo0);
+    assert_eq!(app.lc.session.develop_of(id).unwrap(), before);
+
+    // LightCraft's own shortcuts stay quiet in Simple mode: 3 would rate, Delete would ask to delete
+    let rating = app.lc.session.catalog.photo(id).unwrap().rating;
+    d.key(&mut app, egui::Key::Num3, egui::Modifiers::NONE);
+    d.key(&mut app, egui::Key::Delete, egui::Modifiers::NONE);
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(app.lc.session.catalog.photo(id).unwrap().rating, rating);
+    assert!(app.lc.ui.dialog.is_none());
+
+    // Auto
+    d.click(&mut app, "adjust.auto").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(app.lc.session.undo.last().unwrap().label, "Auto");
+}
+
+#[test]
+fn formats_crop_exactly_and_the_filmstrip_switches_photos() {
+    let (mut app, mut d) = app();
+    let id = app.lc.session.active().unwrap();
+    d.click(&mut app, "tab.format").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    d.click(&mut app, "format.9:16").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(crop::current(&app.lc.session, id), Some(Format::Story));
+    assert!(d.texts().iter().any(|t| t.contains("· 9:16")), "the caption names the format");
+    snapshot(&d, "format-story");
+
+    let other = app.lc.session.visible_cloned().into_iter().find(|p| *p != id).unwrap();
+    d.click(&mut app, &format!("photo.{}", other.0)).unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(app.lc.session.active(), Some(other));
+    d.key(&mut app, egui::Key::ArrowLeft, egui::Modifiers::NONE);
+    assert!(d.settle(&mut app, SETTLE));
+    assert_ne!(app.lc.session.active(), Some(other), "arrow keys step through the photos");
+}
+
+#[test]
+fn export_writes_an_exact_instagram_file() {
+    let (mut app, mut d) = app();
+    let dir = std::env::temp_dir().join(format!("br-ui-export-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    app.simple.export_dir = dir.clone();
+    d.click(&mut app, "export").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(app.simple.tab, Tab::Export, "the top bar's Export opens the tab");
+    d.click(&mut app, "preset.instagram").unwrap();
+    d.click(&mut app, "export.go").unwrap();
+    assert!(d.settle(&mut app, Duration::from_secs(180)), "export finished");
+    let files = app.simple.last_export.clone().expect("exported");
+    assert_eq!((files[0]["width"].as_u64(), files[0]["height"].as_u64()), (Some(1080), Some(1350)));
+    assert!(std::path::Path::new(files[0]["path"].as_str().unwrap()).exists());
+    snapshot(&d, "export-done");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn pro_mode_is_lightcraft_on_the_same_photo_and_back() {
+    let (mut app, mut d) = app();
+    let id = app.lc.session.active().unwrap();
+    // an edit in Simple mode ...
+    br_photo::adjust::set(&mut app.lc.session, id, &[(br_photo::adjust::Slider::Contrast, 40.0)]).unwrap();
+    d.click(&mut app, "mode.pro").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(app.mode, Mode::Pro);
+    assert_eq!(app.lc.session.active(), Some(id));
+    assert_eq!((app.lc.ui.view, app.lc.ui.right), (ViewMode::Detail, RightPanel::Edit));
+    // ... shows in LightCraft's Edit panel
+    snapshot(&d, "pro");
+    let texts = d.texts();
+    assert!(texts.iter().any(|t| t.trim_start_matches('+') == "40"), "Contrast 40 in the Pro panel: {texts:?}");
+    assert!(variety(&d.paint()) > 200);
+    // an edit in Pro mode shows in Simple mode
+    app.lc.run("develop.set", serde_json::json!({"control": "light.exposure", "value": 1.0})).unwrap();
+    d.click(&mut app, "mode.simple").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(app.mode, Mode::Simple);
+    assert_eq!(br_photo::adjust::values(&app.lc.session, id)[0].1, 50.0);
+}
