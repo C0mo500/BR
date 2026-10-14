@@ -32,6 +32,9 @@ use br_photo::export::Preset;
 use lightcraft_mcp::{Backend, Headless, ProgressHook, Server};
 use serde_json::{Map, Value, json};
 
+mod window;
+pub use window::Window;
+
 /// Prefix of BR's own tools.
 pub const TOOL_PREFIX: &str = "br_";
 
@@ -647,7 +650,7 @@ pub struct BrServer {
 impl BrServer {
     /// `full`: also list one `cmd_*` tool per LightCraft command (about 330 tools; they cost an
     /// agent a lot of context, and every command stays reachable through `command_run` anyway).
-    pub fn new(backend: BrBackend, full: bool) -> Self {
+    pub fn new(backend: impl Backend + 'static, full: bool) -> Self {
         Self { server: Server::new(Box::new(backend)).with_command_tools(full), tools: all_tools() }
     }
 
@@ -694,7 +697,7 @@ impl BrServer {
 /// reads the client's lines, rewrites `br_*` calls (or answers bad ones), and a third thread
 /// writes LightCraft's replies out, patching `initialize` and `tools/list`. Notifications such as
 /// progress pass straight through, and a cancellation reaches LightCraft while it exports.
-pub fn serve(backend: BrBackend, full: bool, input: impl BufRead, output: impl Write + Send + 'static) -> std::io::Result<()> {
+pub fn serve(backend: impl Backend + Send + 'static, full: bool, input: impl BufRead, output: impl Write + Send + 'static) -> std::io::Result<()> {
     let tools = Arc::new(all_tools());
     let out = Arc::new(Mutex::new(output));
     let pending: Arc<Mutex<HashMap<String, Patch>>> = Arc::default();

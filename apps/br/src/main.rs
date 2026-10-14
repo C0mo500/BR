@@ -22,7 +22,7 @@ BR — eine Media-Suite: DaVinci-Umfang, so direkt bedienbar wie CapCut. Seiten:
 Farbe, Ton, Ausgabe (Video, FilmCraft) und Foto (LightCraft).
 
 USAGE
-  br [--library DIR | --demo] [FILES…]
+  br [--library DIR | --demo] [--control [PORT]] [FILES…]
       Open the window on the Schnitt page. FILES: videos and sound are added to the video (a new
       one in the first clip's shape), a video project (.fcproj, EDL, XML, FCPXML, OTIO) is opened,
       subtitle files (SRT, VTT, SCC) become captions; photos and folders are imported into the
@@ -38,12 +38,18 @@ USAGE
       The window keeps LightCraft's settings in BR's settings folder (Linux: ~/.config/BR) and
       its log in BR's log folder (Linux: ~/.local/share/BR/Logs; Help ▸ Open Log Folder).
       BR_CONFIG_DIR=DIR keeps both in DIR; set empty, nothing is kept.
+      --control (or BR_CONTROL=1, or a port) opens the window's control channel on 127.0.0.1
+      for `br mcp --connect`: AI agents then work in this window. It is guarded by a token made
+      at each start and kept, readable only by you, in the settings folder (control.json).
 
-  br mcp [--library DIR | --demo] [--full] [FILES…]
+  br mcp [--library DIR | --demo | --connect [HOST:PORT]] [--full] [FILES…]
       MCP server on stdio for AI agents (Claude Code: `claude mcp add br -- br mcp`): photos
       (br_* tools, LightCraft's) and video (br_video_* tools, film_commands/film_run for all of
       FilmCraft). Without --library or --demo the photos live in memory; FILES: photos are
       imported and selected, videos, sound and subtitles go into the video.
+      --connect works in a running window instead (one started with --control): every tool
+      edits what the user sees. Without HOST:PORT it reads the window's port and token from
+      BR's settings folder (control.json); with it the token comes from $BR_CONTROL_TOKEN.
       --full also lists every LightCraft command as a cmd_* tool (about 330 tools).
       A library open in the BR window cannot be opened here at the same time.
 
@@ -317,9 +323,56 @@ fn launch_library(cli: Option<PathBuf>, saved: Option<&UiState>, br_library_set:
     cli.or_else(|| saved.map(|u| u.settings.library_path.as_str()).filter(|p| !p.trim().is_empty() && !br_library_set).map(PathBuf::from))
 }
 
+/// `--control [PORT]`, else `$BR_CONTROL` (a port, or 1/on for a free one): the port of the
+/// window's control channel (0: a free one), `None` without one.
+fn control_port(rest: &mut Vec<String>) -> Result<Option<u16>, String> {
+    let parse = |v: &str| v.parse::<u16>().map_err(|_| format!("--control: `{v}` is not a port"));
+    if let Some(i) = rest.iter().position(|a| a == "--control" || a.starts_with("--control=")) {
+        let a = rest.remove(i);
+        if let Some(v) = a.strip_prefix("--control=") {
+            return parse(v).map(Some);
+        }
+        if rest.get(i).is_some_and(|v| v.parse::<u16>().is_ok()) {
+            return parse(&rest.remove(i)).map(Some);
+        }
+        return Ok(Some(0));
+    }
+    match std::env::var("BR_CONTROL").ok().as_deref().map(str::trim) {
+        None | Some("" | "0" | "off" | "no") => Ok(None),
+        Some("1" | "on" | "yes") => Ok(Some(0)),
+        Some(v) => parse(v).map(Some),
+    }
+}
+
+/// Open the window's control channel and say where (`control.json` next to the settings, for
+/// `br mcp --connect`).
+fn open_control(app: br_ui::BrApp, port: u16, ctx: &egui::Context) -> br_ui::BrApp {
+    let token = br_ui::control::new_token();
+    let (port, channels) = match br_ui::control::start(port, token.clone(), ctx.clone()) {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("control channel on 127.0.0.1:{port}: {e}");
+            return app;
+        }
+    };
+    match br_ui::desktop::config_dir() {
+        Some(dir) => {
+            let path = br_ui::control::info_path(&dir);
+            match br_ui::control::write_info(&path, port, &token) {
+                Ok(()) => log::info!("control channel: 127.0.0.1:{port}, `br mcp --connect` signs in with {}", path.display()),
+                Err(e) => log::error!("control channel: {}: {e}", path.display()),
+            }
+        }
+        // no settings folder (BR_CONFIG_DIR set empty): the token goes to this terminal only
+        None => eprintln!("br: control channel on 127.0.0.1:{port}, token {token} (br mcp --connect 127.0.0.1:{port} with BR_CONTROL_TOKEN)"),
+    }
+    app.with_control(channels)
+}
+
 fn window(args: &[String], logger: Option<&'static logging::AppLogger>) -> Result<(), String> {
     let mut opts = Opts::default();
-    let rest = library_opts(args, &mut opts)?;
+    let mut rest = library_opts(args, &mut opts)?;
+    let control = control_port(&mut rest)?;
     if let Some(bad) = rest.iter().find(|a| a.starts_with('-')) {
         return Err(format!("unknown option `{bad}` (see br --help)"));
     }
@@ -373,6 +426,9 @@ fn window(args: &[String], logger: Option<&'static logging::AppLogger>) -> Resul
             Box::new(move |cc| {
                 came_up.store(true, std::sync::atomic::Ordering::Relaxed);
                 let mut app = br_ui::BrApp::with_services(session, lib, br_ui::desktop::services(cc, log_file.as_deref()));
+                if let Some(port) = control {
+                    app = open_control(app, port, &cc.egui_ctx);
+                }
                 // FilmCraft in the window: dialogs, the GPU, sound, auto-save (not with --demo)
                 br_ui::desktop::film::attach(&mut app.fc, cc, if demo { None } else { br_ui::desktop::video_dir() });
                 // the settings from the last run replace BR's defaults (German, for one)
@@ -448,13 +504,42 @@ fn mcp(args: &[String]) -> Result<(), String> {
     let mut opts = Opts::default();
     let mut full = false;
     let mut files = Vec::new();
-    for a in library_opts(args, &mut opts)? {
+    let mut connect: Option<Option<String>> = None;
+    let rest = library_opts(args, &mut opts)?;
+    let mut it = rest.into_iter().peekable();
+    while let Some(a) = it.next() {
         match a.as_str() {
             "--full" => full = true,
             "--compact" => full = false,
+            "--connect" => connect = Some(it.next_if(|v| v.contains(':') && !v.starts_with('-'))),
+            _ if a.starts_with("--connect=") => connect = Some(Some(a["--connect=".len()..].to_string())),
             _ if a.starts_with('-') => return Err(format!("unknown option `{a}` (see br --help)")),
             _ => files.push(a),
         }
+    }
+    if let Some(addr) = connect {
+        if !files.is_empty() || opts.library.is_some() || opts.demo {
+            return Err("--connect works on the window's library and video: import with the import and br_video_add tools".into());
+        }
+        let info = br_ui::desktop::config_dir().map(|d| br_ui::control::info_path(&d));
+        let window = match addr {
+            None => br_mcp::Window::from_info(
+                info.as_deref().ok_or("no settings folder (BR_CONFIG_DIR is empty): name the window with --connect HOST:PORT")?,
+            )?,
+            Some(addr) => {
+                let token = match std::env::var("BR_CONTROL_TOKEN").ok().filter(|t| !t.is_empty()) {
+                    Some(t) => t,
+                    None => {
+                        let path = info.ok_or("BR_CONTROL_TOKEN is not set and there is no settings folder")?;
+                        let text = std::fs::read_to_string(&path).map_err(|e| format!("BR_CONTROL_TOKEN is not set and {}: {e}", path.display()))?;
+                        serde_json::from_str::<Value>(&text).ok().and_then(|v| v["token"].as_str().map(str::to_string)).ok_or("no token")?
+                    }
+                };
+                br_mcp::Window::new(addr, token)
+            }
+        };
+        log::info!("br mcp: working in {}", lightcraft_mcp::Backend::describe(&window));
+        return br_mcp::serve(window, full, std::io::stdin().lock(), std::io::stdout()).map_err(|e| e.to_string());
     }
     let (session, lib, problem) = open_session(&opts, false);
     if let Some((dir, e)) = problem {

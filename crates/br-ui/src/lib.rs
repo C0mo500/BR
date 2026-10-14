@@ -13,6 +13,7 @@
 //! (FilmCraft's, owned by the `FilmcraftApp`). Both apps' `logic()` runs every frame on every
 //! page (rendering, importing, saving go on); only the app on the page gets keyboard shortcuts.
 
+pub mod control;
 pub mod cut;
 pub mod desktop;
 pub mod headless;
@@ -115,6 +116,10 @@ pub struct BrApp {
     pub widgets: HashMap<String, egui::Rect>,
     /// Where the library is, for the header and messages (`None`: in memory).
     pub library: Option<String>,
+    /// BR's requests from the control channel ([`control`]), when the window has one.
+    control: Option<std::sync::mpsc::Receiver<lightcraft_ui_egui::ControlRequest>>,
+    /// Control requests whose reply waits for background work.
+    pending: Vec<control::Pending>,
 }
 
 /// The services every BR window has: writing files and PNG screenshots. A desktop window adds
@@ -171,9 +176,20 @@ impl BrApp {
             fonts_ok: false,
             widgets: HashMap::new(),
             library,
+            control: None,
+            pending: Vec::new(),
         };
         video::show_page(&mut app.fc, &mut app.video, Page::Schnitt);
         app
+    }
+
+    /// Take requests from a control channel ([`control::start`]): LightCraft's and FilmCraft's go
+    /// to their own handlers, BR's are run here each frame.
+    pub fn with_control(mut self, ch: control::Channels) -> Self {
+        self.lc = self.lc.with_control(ch.photo);
+        self.fc = self.fc.with_control(ch.video);
+        self.control = Some(ch.br);
+        self
     }
 
     /// Show a library that could not be opened (the session is then in memory). `pending_import`
@@ -209,6 +225,7 @@ impl BrApp {
             without_page_input(ctx, |ctx| self.lc.logic(ctx));
         }
         video::logic(&mut self.fc, &mut self.video, ctx);
+        control::drain(self, ctx);
         self.fonts_ok = video::fonts_ready(ctx);
         self.lc.shown_library = Some(self.lc.session.library_generation());
         // LightCraft can open another library (Try Again, Open Library…)
@@ -320,7 +337,13 @@ impl BrApp {
     /// Something is still being worked on (renders, an import or export): keep drawing frames.
     pub fn busy(&self) -> bool {
         let lc = &self.lc;
-        lc.renderer.in_flight() > 0 || lc.import.is_some() || lc.export.is_some() || !lc.tasks.is_empty() || self.photo.exporting() || self.cut.busy()
+        lc.renderer.in_flight() > 0
+            || lc.import.is_some()
+            || lc.export.is_some()
+            || !lc.tasks.is_empty()
+            || self.photo.exporting()
+            || self.cut.busy()
+            || !self.pending.is_empty()
     }
 
     /// Everything closing the window does short of stopping LightCraft's workers: end a drag,

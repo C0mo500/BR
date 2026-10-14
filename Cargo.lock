@@ -726,6 +726,7 @@ name = "br-ui"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "br-mcp",
  "br-photo",
  "br-video",
  "cpal",
@@ -739,8 +740,10 @@ dependencies = [
  "filmcraft-render",
  "filmcraft-time",
  "filmcraft-ui-egui",
+ "getrandom 0.3.4",
  "lightcraft-codecs",
  "lightcraft-engine",
+ "lightcraft-mcp",
  "lightcraft-raster",
  "lightcraft-ui-egui",
  "log",

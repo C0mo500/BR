@@ -18,6 +18,7 @@ rfd = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 br-video = { workspace = true }
+getrandom = { workspace = true }
 filmcraft-engine = { workspace = true }
 filmcraft-ui-egui = { workspace = true }
 filmcraft-export = { workspace = true }
@@ -28,6 +29,10 @@ filmcraft-render = { workspace = true }
 filmcraft-time = { workspace = true }
 cpal = { workspace = true, optional = true }
 arboard = { workspace = true }
+
+[dev-dependencies]
+br-mcp = { workspace = true }
+lightcraft-mcp = { workspace = true }
 
 [features]
 # sound for video playback through the system's audio device (cpal: ALSA on Linux)

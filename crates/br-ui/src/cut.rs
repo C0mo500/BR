@@ -121,6 +121,8 @@ pub struct CutState {
     looks: Option<Vec<(String, String)>>,
     /// Where FilmCraft was drawn this frame (the start screen covers it).
     area: Option<Rect>,
+    /// How the last caption recognition ended (for a control request waiting on it).
+    caption_outcome: Option<Result<Value, String>>,
 }
 
 impl Default for CutState {
@@ -138,6 +140,7 @@ impl Default for CutState {
             picking: None,
             looks: None,
             area: None,
+            caption_outcome: None,
         }
     }
 }
@@ -467,15 +470,16 @@ pub fn poll(app: &mut BrApp, ctx: &egui::Context) {
     if let Some(job) = &app.cut.captions
         && let Some(r) = job.poll()
     {
-        let job = app.cut.captions.take().expect("polled above");
+        let Some(job) = app.cut.captions.take() else { return };
         let answer = r.and_then(|done| br_video::speech::apply(&mut app.fc.session, job.sequence, done));
-        match answer {
+        match &answer {
             Ok(v) => {
                 let n = v["captions"].as_u64().unwrap_or(0);
                 toast(app, ctx, format!("{n} Untertitel erstellt: Text und Stil im Text-Panel › Untertitel"));
             }
             Err(e) => toast(app, ctx, format!("Untertitel: {e}")),
         }
+        app.cut.caption_outcome = Some(answer);
     }
 }
 
@@ -499,13 +503,29 @@ fn start_export(app: &mut BrApp, ctx: &egui::Context) {
 
 fn start_captions(app: &mut BrApp, ctx: &egui::Context) {
     let opts = CaptionOptions { language: Some(app.cut.caption_language.to_string()), model: None };
-    match br_video::speech::start(&app.fc.session, &opts) {
-        Ok(job) => {
-            app.cut.captions = Some(job);
-            app.cut.open = None;
-        }
-        Err(e) => toast(app, ctx, e),
+    if let Err(e) = start_captions_with(app, ctx, opts) {
+        toast(app, ctx, e);
     }
+}
+
+/// Start recognising captions in the background (the tool row shows the progress).
+pub fn start_captions_with(app: &mut BrApp, _ctx: &egui::Context, opts: CaptionOptions) -> Result<(), String> {
+    if app.cut.captions.is_some() {
+        return Err("Untertitel werden schon erkannt".into());
+    }
+    let job = br_video::speech::start(&app.fc.session, &opts)?;
+    app.cut.captions = Some(job);
+    app.cut.caption_outcome = None;
+    app.cut.open = None;
+    Ok(())
+}
+
+/// How the recognition ended, once (for a control request waiting on it).
+pub fn caption_result(app: &mut BrApp) -> Option<Result<Value, String>> {
+    if app.cut.captions.is_some() {
+        return None;
+    }
+    Some(app.cut.caption_outcome.take().unwrap_or_else(|| Err("die Erkennung wurde beendet".into())))
 }
 
 // ── popovers ────────────────────────────────────────────────────────────────────────────────────
