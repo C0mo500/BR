@@ -60,7 +60,8 @@ claude mcp add br -- /pfad/zu/br mcp --connect       # im laufenden Fenster (br 
   `br_video_speed`, `br_video_detach_audio`, `br_video_text`, `br_video_auto_captions`,
   `br_video_captions`, `br_video_music`, `br_video_looks`, `br_video_filter`, `br_video_format`,
   `br_video_transition`, `br_video_preview` (gibt ein Bild zurück), `br_video_export`, `br_video_state`,
-  `br_video_undo`, `br_video_redo`.
+  `br_video_undo`, `br_video_redo`. Lange Arbeit (Untertitel, Export eines langen Videos) läuft mit
+  `wait: false` im Hintergrund; `br_video_jobs` zeigt den Fortschritt, `br_video_cancel` bricht ab.
 - **Der ganze FilmCraft:** `film_commands` sucht unter seinen über 300 Befehlen (Timeline, Lumetri,
   Keyframes, Essential Sound, Untertitel, Export-Einstellungen …), `film_run` führt jeden davon aus.
 - **Fotos** (`br_*`): `br_looks`, `br_look`, `br_adjust`, `br_auto`, `br_crop`, `br_export`, `br_preview`,

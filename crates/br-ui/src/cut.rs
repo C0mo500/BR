@@ -657,6 +657,24 @@ pub fn start_captions_with(app: &mut BrApp, _ctx: &egui::Context, opts: CaptionO
     Ok(())
 }
 
+/// The caption recognition for `br.video.jobs`: running (progress, status) or how it last ended.
+pub fn caption_status(app: &BrApp) -> Value {
+    match (&app.cut.captions, &app.cut.caption_outcome) {
+        (Some(j), _) => {
+            let (f, text) = j.progress();
+            json!({"running": true, "progress": f, "status": text})
+        }
+        (None, Some(Ok(v))) => json!({"done": true, "result": v}),
+        (None, Some(Err(e))) => json!({"done": true, "error": e}),
+        (None, None) => Value::Null,
+    }
+}
+
+/// Stop the caption recognition; whether one was running.
+pub fn cancel_captions(app: &BrApp) -> bool {
+    app.cut.captions.as_ref().map(CaptionJob::cancel).is_some()
+}
+
 /// How the recognition ended, once (for a control request waiting on it).
 pub fn caption_result(app: &mut BrApp) -> Option<Result<Value, String>> {
     if app.cut.captions.is_some() {

@@ -604,3 +604,25 @@ fn the_cut_layout_has_the_source_monitor_and_quick_export_opens() {
     assert!(app.fc.ui_error.is_none(), "{:?}", app.fc.ui_error);
     snapshot(&d, "quick-export");
 }
+
+#[test]
+fn reset_to_saved_layout_brings_back_brs_schnitt_arrangement() {
+    let (mut app, mut d) = video_app();
+    assert!(app.fc.workspaces.saved.iter().any(|w| w.name == br_ui::video::SCHNITT_WORKSPACE));
+    assert_eq!(app.fc.ui.workspace, br_ui::video::SCHNITT_WORKSPACE);
+    let panels = |n: &filmcraft_ui_egui::dock::DockNode| {
+        let mut v = Vec::new();
+        n.panels(&mut v);
+        v
+    };
+    let ours = panels(&br_ui::video::schnitt_layout());
+    // the user drops most of it, then Window ▸ Workspaces ▸ Reset to Saved Layout
+    app.fc.ui.dock = filmcraft_ui_egui::dock::DockNode::Tabs { panels: vec![filmcraft_ui_egui::dock::PanelKind::Timeline], active: 0 };
+    filmcraft_ui_egui::menus::invoke(&mut app.fc, &d.view.ctx.clone(), "window.workspace.reset", serde_json::json!({})).unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(panels(&app.fc.ui.dock), ours, "BR's arrangement is back");
+    // Farbe is FilmCraft's Color workspace, and says so
+    app.open(Page::Farbe);
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(app.fc.ui.workspace, "Color");
+}

@@ -83,6 +83,51 @@ impl CaptionJob {
     }
 }
 
+/// A recognition run in the background for something that keeps running (`br mcp`, the
+/// window's control channel): start it, ask how it is, cancel it; its result is put in the
+/// project when it is done.
+#[derive(Default)]
+pub struct Background {
+    job: Option<CaptionJob>,
+    /// How the last run ended: the captions made, or why not.
+    pub last: Option<Result<Value, String>>,
+}
+
+impl Background {
+    pub fn start(&mut self, s: &Session, opts: &CaptionOptions) -> Result<(), String> {
+        if self.job.is_some() {
+            return Err("Untertitel werden schon erkannt".into());
+        }
+        self.job = Some(start(s, opts)?);
+        self.last = None;
+        Ok(())
+    }
+
+    /// Put a finished run's result in the project (call this often).
+    pub fn poll(&mut self, s: &mut Session) {
+        let Some(r) = self.job.as_ref().and_then(CaptionJob::poll) else { return };
+        let Some(job) = self.job.take() else { return };
+        self.last = Some(r.and_then(|done| apply(s, job.sequence, done)));
+    }
+
+    pub fn cancel(&self) -> bool {
+        self.job.as_ref().map(CaptionJob::cancel).is_some()
+    }
+
+    /// `{running, progress, status}` while it runs, then `{done, result | error}`.
+    pub fn status(&self) -> Value {
+        match (&self.job, &self.last) {
+            (Some(j), _) => {
+                let (f, text) = j.progress();
+                json!({"running": true, "progress": f, "status": text})
+            }
+            (None, Some(Ok(v))) => json!({"done": true, "result": v}),
+            (None, Some(Err(e))) => json!({"done": true, "error": e}),
+            (None, None) => Value::Null,
+        }
+    }
+}
+
 /// Whether this build can recognise speech (a model can be loaded or one is installed).
 pub fn available(s: &Session) -> bool {
     s.transcriber.is_some() || filmcraft_speech::available()

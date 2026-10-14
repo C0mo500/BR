@@ -175,8 +175,8 @@ pub const COMMANDS: &[CommandInfo] = &[
     },
     CommandInfo {
         id: "br.video.autoCaptions",
-        params: r#"{"language":"de|en|…|auto"?,"model":"whisper-tiny|whisper-base|whisper-small"?}"#,
-        summary: "Captions from the speech in the video (Whisper; the model is downloaded the first time)",
+        params: r#"{"language":"de|en|…|auto"?,"model":"whisper-tiny|whisper-base|whisper-small"?,"wait":bool=true}"#,
+        summary: "Captions from the speech in the video (Whisper; the model is downloaded the first time). wait:false (window, br mcp) runs it in the background: see br.video.jobs",
     },
     CommandInfo {
         id: "br.video.format",
@@ -189,6 +189,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         summary: "A dissolve at the cuts between the selected clips (every cut of the main track without a selection)",
     },
     CommandInfo { id: "br.video.state", params: "{}", summary: "The video at a glance: format, length, clips, playhead" },
+    CommandInfo {
+        id: "br.video.jobs",
+        params: "{}",
+        summary: "The exports (and, in a window or br mcp, the caption recognition) running or done: progress, errors",
+    },
+    CommandInfo { id: "br.video.cancel", params: r#"{"job":id?,"captions":bool?}"#, summary: "Stop an export (`job`) or the caption recognition" },
     CommandInfo {
         id: "br.video.commands",
         params: r#"{"query":str?}"#,
@@ -259,6 +265,21 @@ pub fn open_files(s: &mut Session, paths: &[String]) -> Result<Value, String> {
     Ok(st)
 }
 
+/// FilmCraft's export jobs of this session: `{job, label, progress (0..1), etaSeconds, done,
+/// error}`.
+pub fn jobs(s: &Session) -> Value {
+    Value::Array(
+        s.jobs
+            .iter()
+            .map(|j| {
+                let v = j.to_json();
+                let error = v["result"].get("error").cloned().unwrap_or(Value::Null);
+                json!({"job": j.id, "label": j.label, "progress": v["progress"], "etaSeconds": v["etaSeconds"], "done": v["finished"], "error": error})
+            })
+            .collect(),
+    )
+}
+
 /// The hidden file an export to `path` is written to until it is complete.
 pub fn part_path(path: &std::path::Path) -> std::path::PathBuf {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Video.mp4".into());
@@ -266,21 +287,51 @@ pub fn part_path(path: &std::path::Path) -> std::path::PathBuf {
     path.with_file_name(format!(".{stem}.br-part.{ext}"))
 }
 
-/// An export job's end: `None` while it runs; when it is done the part file becomes `path`
-/// (`Ok`), or is removed (`Err`: failed or cancelled).
+/// When an export ends, its part file becomes the export (or is removed when it failed or was
+/// cancelled). A thread watches the job, so this happens whether or not anyone asks again.
+fn watch_export(s: &Session, job: u64, part: std::path::PathBuf, path: std::path::PathBuf) {
+    let Some(result) = s.jobs.iter().find(|j| j.id == job).map(|j| j.result.clone()) else { return };
+    let shown = path.display().to_string();
+    let watched = std::thread::Builder::new().name("br-export-watch".into()).spawn(move || {
+        loop {
+            let done = result.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|r| r.is_ok());
+            match done {
+                Some(true) => {
+                    if let Err(e) = std::fs::rename(&part, &path) {
+                        log::error!("export {}: {e}", path.display());
+                    }
+                    return;
+                }
+                Some(false) => {
+                    let _ = std::fs::remove_file(&part);
+                    return;
+                }
+                None => std::thread::sleep(std::time::Duration::from_millis(100)),
+            }
+        }
+    });
+    if let Err(e) = watched {
+        log::error!("export {shown}: no thread to finish it: {e}");
+    }
+}
+
+/// An export job's end: `None` while it runs (or its file is still being put in place), then
+/// `Ok` when the file is there, `Err` when it failed or was cancelled.
 pub fn settle_export(s: &Session, job: u64, part: &std::path::Path, path: &std::path::Path) -> Option<Result<(), String>> {
     let result = match s.jobs.iter().find(|j| j.id == job) {
         Some(j) => j.result.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|r| r.as_ref().map(|_| ()).map_err(Clone::clone))?,
-        // FilmCraft let go of the job: the file tells
-        None if part.exists() => Ok(()),
+        None if part.exists() => return None,
+        None if path.exists() => Ok(()),
         None => Err("abgebrochen".into()),
     };
+    // the watcher has not moved the file yet
+    if part.exists() {
+        return None;
+    }
     Some(match result {
-        Ok(()) => std::fs::rename(part, path).map_err(|e| format!("{}: {e}", path.display())),
-        Err(e) => {
-            let _ = std::fs::remove_file(part);
-            Err(if e == "cancelled" { "abgebrochen".into() } else { e })
-        }
+        Ok(()) if path.exists() => Ok(()),
+        Ok(()) => Err(format!("{} wurde nicht geschrieben", path.display())),
+        Err(e) => Err(if e == "cancelled" { "abgebrochen".into() } else { e }),
     })
 }
 
@@ -802,6 +853,9 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
             Ok(json!({"transitions": n}))
         }
         "br.video.autoCaptions" => {
+            if p.get("wait").and_then(Value::as_bool) == Some(false) {
+                return Err(err(id, "wait:false needs something that keeps running (the window or br mcp)"));
+            }
             let opts = speech::CaptionOptions {
                 language: p.get("language").and_then(Value::as_str).map(str::to_string),
                 model: p.get("model").and_then(Value::as_str).map(str::to_string),
@@ -847,17 +901,27 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
                 run(s, "export.quick", json!({"preset": preset.filmcraft, "path": part_str, "wait": wait, "burnCaptions": burn, "range": range}))?;
             r["path"] = json!(path.to_string_lossy());
             r["part"] = json!(part_str);
-            if wait {
-                // a waited-for export that failed is a failure (FilmCraft keeps the error in its job)
-                let job = r.get("job").and_then(Value::as_u64).unwrap_or(0);
-                match settle_export(s, job, &part, &path) {
-                    Some(Ok(())) | None => {}
-                    Some(Err(e)) => return Err(err(id, e)),
-                }
+            let job = r.get("job").and_then(Value::as_u64).unwrap_or(0);
+            if !wait {
+                watch_export(s, job, part, path);
+                return Ok(r);
             }
+            // a waited-for export that failed is a failure (FilmCraft keeps the error in its job)
+            let failed =
+                s.jobs.iter().find(|j| j.id == job).and_then(|j| j.result.lock().unwrap_or_else(|e| e.into_inner()).clone()).and_then(Result::err);
+            if let Some(e) = failed {
+                let _ = std::fs::remove_file(&part);
+                return Err(err(id, if e == "cancelled" { "abgebrochen".to_string() } else { e }));
+            }
+            std::fs::rename(&part, &path).map_err(|e| err(id, format!("{}: {e}", path.display())))?;
             Ok(r)
         }
         "br.video.state" => state(s),
+        "br.video.jobs" => Ok(json!({"exports": jobs(s)})),
+        "br.video.cancel" => {
+            let job = p.get("job").and_then(Value::as_u64).ok_or_else(|| err(id, "needs `job` (from br.video.jobs)"))?;
+            run(s, "jobs.cancel", json!({"job": job}))
+        }
         "br.video.commands" => {
             let query = p.get("query").and_then(Value::as_str).unwrap_or("").to_lowercase();
             let list: Vec<Value> = filmcraft_engine::command_specs()

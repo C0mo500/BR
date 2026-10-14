@@ -63,15 +63,32 @@ pub fn schnitt_layout() -> DockNode {
     split(true, SplitSize::Ratio(0.58), top, bottom)
 }
 
-/// FilmCraft's mode and layout for a video page.
-fn layout(page: Page) -> (FcMode, DockNode) {
+/// BR's Schnitt arrangement as one of FilmCraft's workspaces: Window ▸ Workspaces lists it,
+/// "Reset to Saved Layout" goes back to it, "Save Changes" keeps the user's version of it.
+pub const SCHNITT_WORKSPACE: &str = "Schnitt";
+
+/// The FilmCraft workspace a video page is made from.
+fn workspace_of(page: Page) -> &'static str {
     match page {
-        Page::Medien => (FcMode::Import, schnitt_layout()),
-        Page::Farbe => (FcMode::Edit, filmcraft_ui_egui::dock::workspace("Color")),
-        Page::Ton => (FcMode::Edit, filmcraft_ui_egui::dock::workspace("Audio")),
-        Page::Ausgabe => (FcMode::Export, schnitt_layout()),
-        Page::Schnitt | Page::Foto => (FcMode::Edit, schnitt_layout()),
+        Page::Farbe => "Color",
+        Page::Ton => "Audio",
+        _ => SCHNITT_WORKSPACE,
     }
+}
+
+/// FilmCraft's mode for a video page.
+fn mode_of(page: Page) -> FcMode {
+    match page {
+        Page::Medien => FcMode::Import,
+        Page::Ausgabe => FcMode::Export,
+        _ => FcMode::Edit,
+    }
+}
+
+/// FilmCraft's mode and layout for a video page: its workspace as saved (the user may have saved
+/// changes to it), else as it comes.
+fn layout(fc: &FilmcraftApp, page: Page) -> (FcMode, DockNode) {
+    (mode_of(page), filmcraft_ui_egui::dock::saved_docking(&fc.workspaces, workspace_of(page)).root)
 }
 
 /// A new FilmCraft as BR shows it: in German, without its own header (BR's header has the pages
@@ -84,7 +101,14 @@ pub fn new_app(mut session: br_video::Session) -> FilmcraftApp {
     // the pages bring their own layouts: FilmCraft must not reopen its last workspace over them on
     // its first frame (the saved workspaces stay in its Window menu)
     fc.workspaces.current.clear();
-    let (mode, dock) = layout(Page::Schnitt);
+    if !fc.workspaces.saved.iter().any(|w| w.name == SCHNITT_WORKSPACE) {
+        fc.workspaces.saved.push(filmcraft_ui_egui::dock::SavedWorkspace {
+            name: SCHNITT_WORKSPACE.into(),
+            layout: serde_json::to_value(schnitt_layout()).unwrap_or_default(),
+            floating: serde_json::Value::Null,
+        });
+    }
+    let (mode, dock) = layout(&fc, Page::Schnitt);
     fc.ui.mode = mode;
     fc.ui.dock = dock;
     fc
@@ -103,22 +127,17 @@ pub fn german_by_default(session: &mut br_video::Session) {
 pub fn show_page(fc: &mut FilmcraftApp, st: &mut VideoState, page: Page) {
     if st.shown == Some(page) {
         // the page's mode, should FilmCraft have left it
-        fc.ui.mode = layout(page).0;
+        fc.ui.mode = mode_of(page);
         return;
     }
     if let Some(old) = st.shown {
         st.docks.insert(old, fc.ui.dock.clone());
     }
-    let (mode, default) = layout(page);
+    let (mode, default) = layout(fc, page);
     fc.ui.mode = mode;
     fc.ui.dock = st.docks.remove(&page).unwrap_or(default);
     // Window ▸ Workspaces names (and resets to) the workspace a page is made from
-    fc.ui.workspace = match page {
-        Page::Farbe => "Color",
-        Page::Ton => "Audio",
-        _ => "",
-    }
-    .into();
+    fc.ui.workspace = workspace_of(page).into();
     st.shown = Some(page);
 }
 

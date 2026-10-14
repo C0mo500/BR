@@ -267,3 +267,78 @@ fn an_agent_cuts_a_vertical_video_and_looks_at_it() {
     assert_eq!(r["result"]["isError"], true, "{r}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A recogniser that stops only when cancelled.
+struct Endless;
+
+impl filmcraft_speech::Transcriber for Endless {
+    fn id(&self) -> String {
+        "endless".into()
+    }
+    fn transcribe(
+        &self,
+        _: &[f32],
+        _: &filmcraft_speech::Options,
+        progress: filmcraft_speech::ProgressFn,
+    ) -> Result<filmcraft_project::Transcript, filmcraft_speech::SpeechError> {
+        while progress(0.4, "") {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        Err(filmcraft_speech::SpeechError::Cancelled)
+    }
+}
+
+#[test]
+fn long_video_work_runs_in_the_background_and_can_be_stopped() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("br-mcp-jobs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let clip = dir.join("talk.mp4");
+    let o = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=3"])
+        .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"])
+        .arg(&clip)
+        .output()
+        .unwrap();
+    assert!(o.status.success());
+    lightcraft_engine::gpu::set_enabled(false);
+    let mut backend = BrBackend::new(Headless::demo(), "demo photos");
+    backend.video.transcriber = Some(std::sync::Arc::new(Endless));
+    let mut s = BrServer::new(backend, false);
+    s.handle(json!({"jsonrpc": "2.0", "id": 0, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}}));
+    ok(&mut s, "br_video_add", json!({"paths": [clip.to_string_lossy()]}));
+
+    // captions in the background: running, then stopped
+    let r = ok(&mut s, "br_video_auto_captions", json!({"wait": false}));
+    assert_eq!(r["started"], true, "{r}");
+    let jobs = ok(&mut s, "br_video_jobs", json!({}));
+    assert_eq!(jobs["captions"]["running"], true, "{jobs}");
+    assert_eq!(ok(&mut s, "br_video_cancel", json!({"captions": true}))["cancelled"], true);
+    let t0 = std::time::Instant::now();
+    let status = loop {
+        let jobs = ok(&mut s, "br_video_jobs", json!({}));
+        if jobs["captions"]["done"] == true {
+            break jobs["captions"].clone();
+        }
+        assert!(t0.elapsed().as_secs() < 60, "{jobs}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert_eq!(status["error"], "abgebrochen", "{status}");
+
+    // an export in the background is complete in its folder by itself, nobody asking again
+    let out = dir.join("later.mp4");
+    let r = ok(&mut s, "br_video_export", json!({"preset": "video", "path": out.to_string_lossy(), "wait": false}));
+    assert!(r["job"].is_u64(), "{r}");
+    let t0 = std::time::Instant::now();
+    while !out.exists() {
+        assert!(t0.elapsed().as_secs() < 120, "the export never appeared");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let jobs = ok(&mut s, "br_video_jobs", json!({}));
+    assert!(jobs["exports"].as_array().unwrap().iter().any(|j| j["done"] == true && j["error"].is_null()), "{jobs}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -703,6 +703,8 @@ version = "0.1.0"
 dependencies = [
  "br-photo",
  "br-video",
+ "filmcraft-project",
+ "filmcraft-speech",
  "lightcraft-codecs",
  "lightcraft-engine",
  "lightcraft-mcp",

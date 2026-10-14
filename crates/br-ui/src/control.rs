@@ -477,13 +477,19 @@ fn run_command(app: &mut BrApp, ctx: &egui::Context, id: &str, params: Value, re
                 language: params.get("language").and_then(Value::as_str).map(str::to_string),
                 model: params.get("model").and_then(Value::as_str).map(str::to_string),
             };
+            let wait = params.get("wait").and_then(Value::as_bool).unwrap_or(true);
             match crate::cut::start_captions_with(app, ctx, opts) {
-                Ok(()) => {
+                Ok(()) if wait => {
                     app.pending.push(Pending::Captions { reply: reply.clone() });
                     None
                 }
+                Ok(()) => Some(ok(json!({"started": true, "poll": "br_video_jobs"}))),
                 Err(e) => Some(err(e)),
             }
+        }
+        "br.video.jobs" => Some(ok(json!({"exports": br_video::jobs(&app.fc.session), "captions": crate::cut::caption_status(app)}))),
+        "br.video.cancel" if params.get("captions").and_then(Value::as_bool) == Some(true) => {
+            Some(ok(json!({"cancelled": crate::cut::cancel_captions(app)})))
         }
         _ if br_video::is_video(id) => Some(wrap(br_video::execute(&mut app.fc.session, id, &params))),
         _ => {

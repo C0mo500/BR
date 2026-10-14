@@ -45,7 +45,8 @@ timeline, colour, sound, captions, export). VIDEO: the br_video_* tools work on 
 `br_video_delete` / `br_video_speed` to cut, `br_video_text`, `br_video_auto_captions` (speech recognition) or \
 `br_video_captions` (SRT file), `br_video_music` (lowered under speech), `br_video_filter` (a look), `br_video_format` \
 (9:16, 16:9, 1:1, 4:5), `br_video_preview` to look at a frame, `br_video_export` (social, youtube, youtube4k, video, \
-prores). Each step is one undo step (`br_video_undo`). Everything else FilmCraft can do: `film_commands` to find a \
+prores). Each step is one undo step (`br_video_undo`). Long work (automatic captions, exporting a long video) can run in \
+the background with `wait: false`: `br_video_jobs` tells how far it is, `br_video_cancel` stops it. Everything else FilmCraft can do: `film_commands` to find a \
 command, `film_run` to run it (`sequence.inspect` describes the timeline; times are in ticks, 254016000000 per \
 second). PHOTOS: start with the br_* tools: they work on the active photo unless you pass `id`. A typical edit: `import` the files (or \
 `query_photos` / `select_photos` to pick one), `br_looks` then `br_look` for a style, `br_adjust` for light, contrast, \
@@ -60,13 +61,15 @@ pub struct BrBackend {
     pub state: BrState,
     /// The video project (FilmCraft): `br.video.*` and `film.<id>` run on it.
     pub video: br_video::Session,
+    /// Caption recognition started with `wait: false`.
+    pub captions: br_video::speech::Background,
     /// How the session was opened, for the agent ("library at …", "demo photos", …).
     pub origin: String,
 }
 
 impl BrBackend {
     pub fn new(inner: Headless, origin: impl Into<String>) -> Self {
-        Self { inner, state: BrState::default(), video: br_video::Session::default(), origin: origin.into() }
+        Self { inner, state: BrState::default(), video: br_video::Session::default(), captions: Default::default(), origin: origin.into() }
     }
 
     /// Render the video's frame for `br_video_preview` into a PNG at `path`.
@@ -94,6 +97,23 @@ impl Backend for BrBackend {
             && let Some(id) = params.get("command").or(params.get("id")).and_then(Value::as_str)
         {
             let p = params.get("params").cloned().unwrap_or(Value::Null);
+            // finished background recognition goes into the project first
+            self.captions.poll(&mut self.video);
+            match id {
+                "br.video.autoCaptions" if p.get("wait").and_then(Value::as_bool) == Some(false) => {
+                    let opts = br_video::speech::CaptionOptions {
+                        language: p.get("language").and_then(Value::as_str).map(str::to_string),
+                        model: p.get("model").and_then(Value::as_str).map(str::to_string),
+                    };
+                    self.captions.start(&self.video, &opts)?;
+                    return Ok(json!({"started": true, "poll": "br_video_jobs"}));
+                }
+                "br.video.jobs" => return Ok(json!({"exports": br_video::jobs(&self.video), "captions": self.captions.status()})),
+                "br.video.cancel" if p.get("captions").and_then(Value::as_bool) == Some(true) => {
+                    return Ok(json!({"cancelled": self.captions.cancel()}));
+                }
+                _ => {}
+            }
             if br_video::is_video(id) {
                 return br_video::execute(&mut self.video, id, &p);
             }
@@ -273,6 +293,8 @@ const VIDEO_TOOLS: &[(&str, &str)] = &[
     ("br_video_format", "br.video.format"),
     ("br_video_transition", "br.video.transition"),
     ("br_video_export", "br.video.export"),
+    ("br_video_jobs", "br.video.jobs"),
+    ("br_video_cancel", "br.video.cancel"),
     ("br_video_undo", "film.edit.undo"),
     ("br_video_redo", "film.edit.redo"),
     ("film_commands", "br.video.commands"),
@@ -356,10 +378,11 @@ pub fn video_tools() -> Vec<Value> {
         tool(
             "br_video_auto_captions",
             "Automatic captions",
-            "Recognise the speech in the video (Whisper, on this computer) and make captions from it, one undo step. The first time the model is downloaded (about 150 MB). Takes a while for long videos.",
+            "Recognise the speech in the video (Whisper, on this computer) and make captions from it, one undo step. The first time the model is downloaded (about 150 MB). Takes a while for long videos: with wait false it runs in the background (br_video_jobs shows how far it is, br_video_cancel stops it).",
             json!({
                 "language": {"type": "string", "description": "Spoken language as an ISO code (de, en, fr, …) or auto (default)"},
                 "model": {"type": "string", "enum": ["whisper-tiny", "whisper-base", "whisper-small"], "description": "Default: the one in FilmCraft's settings (whisper-base)"},
+                "wait": {"type": "boolean", "description": "Wait for the captions (default true); false: start and return"},
             }),
             &[],
             false,
@@ -426,6 +449,22 @@ pub fn video_tools() -> Vec<Value> {
             }),
             &[],
             true,
+        ),
+        tool(
+            "br_video_jobs",
+            "Video jobs",
+            "What runs in the background: exports (progress 0..1, done, error) and the caption recognition (progress, status, then its result).",
+            json!({}),
+            &[],
+            true,
+        ),
+        tool(
+            "br_video_cancel",
+            "Cancel video job",
+            "Stop an export (`job` from br_video_jobs) or the caption recognition (`captions`: true). A stopped export leaves no file.",
+            json!({"job": {"type": "integer"}, "captions": {"type": "boolean"}}),
+            &[],
+            false,
         ),
         tool("br_video_undo", "Undo (video)", "Undo the last change to the video.", json!({}), &[], false),
         tool("br_video_redo", "Redo (video)", "Redo the last undone change to the video.", json!({}), &[], false),
