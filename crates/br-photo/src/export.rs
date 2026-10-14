@@ -14,9 +14,7 @@ use std::sync::Arc;
 
 use lightcraft_engine::Session;
 use lightcraft_engine::catalog::{Op, PhotoId};
-use lightcraft_engine::export::{
-    Destination, ExportOptions, PreparedExport, prepare_batch, run_batch, write_file,
-};
+use lightcraft_engine::export::{Destination, ExportOptions, PreparedExport, prepare_batch, run_batch, write_file};
 use serde_json::{Value, json};
 
 use crate::crop::{self, Format};
@@ -37,13 +35,7 @@ pub enum Preset {
 }
 
 impl Preset {
-    pub const ALL: [Preset; 5] = [
-        Preset::Instagram,
-        Preset::Story,
-        Preset::Square,
-        Preset::Wide,
-        Preset::Full,
-    ];
+    pub const ALL: [Preset; 5] = [Preset::Instagram, Preset::Story, Preset::Square, Preset::Wide, Preset::Full];
 
     /// Name in commands.
     pub fn key(self) -> &'static str {
@@ -144,10 +136,7 @@ pub fn default_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("BR_EXPORTS").filter(|d| !d.is_empty()) {
         return PathBuf::from(d);
     }
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
     home.join("Pictures").join("BR Exports")
 }
 
@@ -166,24 +155,12 @@ impl Plan {
     pub fn run(self) -> Result<Vec<Value>, String> {
         let mut write = |path: &str, bytes: &[u8]| write_file(path, bytes);
         let exists = |path: &str| Path::new(path).exists();
-        run_batch(
-            self.items,
-            &self.opts,
-            &self.dest,
-            &mut write,
-            &exists,
-            true,
-            &mut |_, _| true,
-        )
+        run_batch(self.items, &self.opts, &self.dest, &mut write, &exists, true, &mut |_, _| true)
     }
 }
 
 /// Settings photo `id` is exported with under `preset`, or `None` to export it as it is.
-pub fn export_settings(
-    s: &Session,
-    id: PhotoId,
-    preset: Preset,
-) -> Option<lightcraft_engine::develop::DevelopSettings> {
+pub fn export_settings(s: &Session, id: PhotoId, preset: Preset) -> Option<lightcraft_engine::develop::DevelopSettings> {
     let format = preset.format()?;
     let ratio = format.ratio()?;
     let (w, h) = oriented_dims(s, id)?;
@@ -199,32 +176,18 @@ pub fn export_settings(
 }
 
 /// Set up the export of photo `id` with `preset` to `target`. Cheap: no pixels are read yet.
-pub fn prepare(
-    s: &mut Session,
-    id: PhotoId,
-    preset: Preset,
-    target: &Target,
-) -> Result<Plan, String> {
+pub fn prepare(s: &mut Session, id: PhotoId, preset: Preset, target: &Target) -> Result<Plan, String> {
     if s.catalog.photo(id).is_none() {
         return Err(format!("no such photo {}", id.0));
     }
     let opts = preset.options()?;
     let dest = match target {
-        Target::Dir(dir) => Destination {
-            dir: dir.to_string_lossy().into_owned(),
-            exact: None,
-        },
+        Target::Dir(dir) => Destination { dir: dir.to_string_lossy().into_owned(), exact: None },
         Target::File(path) => {
             let path = path.to_string_lossy().into_owned();
             s.check_write_target(&path)?;
-            let dir = Path::new(&path)
-                .parent()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            Destination {
-                dir,
-                exact: Some(path),
-            }
+            let dir = Path::new(&path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+            Destination { dir, exact: Some(path) }
         }
     };
     let items = match export_settings(s, id, preset) {
@@ -232,36 +195,18 @@ pub fn prepare(
         Some(temp) => {
             // the export's crop, only while LightCraft sets the export up
             let edited = s.catalog.photo(id).and_then(|p| p.edited.clone());
-            let inverse = s
-                .catalog
-                .apply(Op::SetDevelop {
-                    id,
-                    settings: Arc::new(temp),
-                    label: "BR export".into(),
-                    edited,
-                })
-                .map_err(|e| e.to_string())?;
+            let inverse =
+                s.catalog.apply(Op::SetDevelop { id, settings: Arc::new(temp), label: "BR export".into(), edited }).map_err(|e| e.to_string())?;
             let items = prepare_batch(s, &[id], &opts);
             s.catalog.apply(inverse).map_err(|e| e.to_string())?;
             items?
         }
     };
-    Ok(Plan {
-        photo: id,
-        preset,
-        items,
-        opts,
-        dest,
-    })
+    Ok(Plan { photo: id, preset, items, opts, dest })
 }
 
 /// [`prepare`] and [`Plan::run`] in one go.
-pub fn export(
-    s: &mut Session,
-    id: PhotoId,
-    preset: Preset,
-    target: &Target,
-) -> Result<Vec<Value>, String> {
+pub fn export(s: &mut Session, id: PhotoId, preset: Preset, target: &Target) -> Result<Vec<Value>, String> {
     prepare(s, id, preset, target)?.run()
 }
 
@@ -278,11 +223,7 @@ mod tests {
 
     /// A JPEG of `w`×`h` on disk, imported into a fresh session.
     fn session_with_jpeg(dir: &Path, w: usize, h: usize) -> (Session, PhotoId) {
-        let mut img = lightcraft_raster::Rgba8 {
-            width: w,
-            height: h,
-            data: vec![[0, 0, 0, 255]; w * h],
-        };
+        let mut img = lightcraft_raster::Rgba8 { width: w, height: h, data: vec![[0, 0, 0, 255]; w * h] };
         for y in 0..h {
             for x in 0..w {
                 img.data[y * w + x] = [(x * 255 / w) as u8, (y * 255 / h) as u8, 128, 255];
@@ -293,12 +234,7 @@ mod tests {
         let path = dir.join(format!("in-{w}x{h}.jpg"));
         std::fs::write(&path, bytes).unwrap();
         let mut s = Session::new().with_fs();
-        let r = s
-            .execute(
-                "library.import",
-                &json!({"paths": [path.to_string_lossy()]}),
-            )
-            .unwrap();
+        let r = s.execute("library.import", &json!({"paths": [path.to_string_lossy()]})).unwrap();
         let id = PhotoId(r["imported"][0].as_u64().unwrap());
         (s, id)
     }
@@ -325,20 +261,11 @@ mod tests {
             let (mut s, id) = session_with_jpeg(&dir, w, h);
             let before = s.catalog.photo(id).unwrap().clone();
             let (undo0, commits0) = (s.undo.len(), s.commits());
-            for preset in [
-                Preset::Instagram,
-                Preset::Story,
-                Preset::Square,
-                Preset::Wide,
-            ] {
+            for preset in [Preset::Instagram, Preset::Story, Preset::Square, Preset::Wide] {
                 let files = export(&mut s, id, preset, &Target::Dir(dir.clone())).unwrap();
                 let f = &files[0];
                 let (ew, eh) = preset.size().unwrap();
-                assert_eq!(
-                    (f["width"].as_u64().unwrap(), f["height"].as_u64().unwrap()),
-                    (ew as u64, eh as u64),
-                    "{preset:?} from {w}x{h}"
-                );
+                assert_eq!((f["width"].as_u64().unwrap(), f["height"].as_u64().unwrap()), (ew as u64, eh as u64), "{preset:?} from {w}x{h}");
                 let path = f["path"].as_str().unwrap();
                 assert!(path.ends_with(&format!("-{}.jpg", preset.key())), "{path}");
                 assert!(Path::new(path).exists());
@@ -362,24 +289,10 @@ mod tests {
         s.set_develop(id, d, "test").unwrap();
         let t = export_settings(&s, id, Preset::Instagram).unwrap();
         let r = t.crop.geometry.rect_px(1200.0, 800.0);
-        assert!(
-            (r.width() - 400.0).abs() < 1e-6 && (r.height() - 500.0).abs() < 1e-6,
-            "{r:?}"
-        );
+        assert!((r.width() - 400.0).abs() < 1e-6 && (r.height() - 500.0).abs() < 1e-6, "{r:?}");
         assert!(r.x0 < 1.0, "kept at the left edge: {r:?}");
-        let files = export(
-            &mut s,
-            id,
-            Preset::Instagram,
-            &Target::File(dir.join("exact name.jpg")),
-        )
-        .unwrap();
-        assert!(
-            files[0]["path"]
-                .as_str()
-                .unwrap()
-                .ends_with("exact name.jpg")
-        );
+        let files = export(&mut s, id, Preset::Instagram, &Target::File(dir.join("exact name.jpg"))).unwrap();
+        assert!(files[0]["path"].as_str().unwrap().ends_with("exact name.jpg"));
         assert_eq!(files[0]["height"], 1350);
         let _ = std::fs::remove_dir_all(&dir);
     }

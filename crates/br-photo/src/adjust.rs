@@ -41,14 +41,7 @@ pub enum Slider {
 }
 
 impl Slider {
-    pub const ALL: [Slider; 6] = [
-        Slider::Light,
-        Slider::Contrast,
-        Slider::Color,
-        Slider::Warmth,
-        Slider::Sharpness,
-        Slider::Vignette,
-    ];
+    pub const ALL: [Slider; 6] = [Slider::Light, Slider::Contrast, Slider::Color, Slider::Warmth, Slider::Sharpness, Slider::Vignette];
 
     /// Parameter name in `br.adjust` and the MCP tools.
     pub fn key(self) -> &'static str {
@@ -66,14 +59,7 @@ impl Slider {
     pub fn parse(s: &str) -> Option<Slider> {
         let s = s.trim().to_lowercase();
         Slider::ALL.into_iter().find(|k| {
-            s == k.key()
-                || s == k.label().to_lowercase()
-                || s == k
-                    .label()
-                    .to_lowercase()
-                    .replace('ä', "ae")
-                    .replace('ö', "oe")
-                    .replace('ü', "ue")
+            s == k.key() || s == k.label().to_lowercase() || s == k.label().to_lowercase().replace('ä', "ae").replace('ö', "oe").replace('ü', "ue")
         })
     }
 
@@ -109,10 +95,7 @@ impl Slider {
             Slider::Light => vec![("light.exposure", v / 50.0)],
             Slider::Contrast => vec![("light.contrast", v)],
             Slider::Color => vec![("color.vibrance", v), ("color.saturation", v / 4.0)],
-            Slider::Warmth => vec![(
-                "wb.temp",
-                1e6 / (1e6 / as_shot_temp.max(1000.0) - v * MIRED_STEP),
-            )],
+            Slider::Warmth => vec![("wb.temp", 1e6 / (1e6 / as_shot_temp.max(1000.0) - v * MIRED_STEP))],
             Slider::Sharpness => vec![("effects.texture", v * 0.6), ("effects.clarity", v * 0.3)],
             Slider::Vignette => vec![("vignette.amount", -v)],
         }
@@ -139,11 +122,7 @@ impl Slider {
 }
 
 fn clamp(v: f64) -> f64 {
-    if v.is_finite() {
-        v.clamp(MIN, MAX)
-    } else {
-        0.0
-    }
+    if v.is_finite() { v.clamp(MIN, MAX) } else { 0.0 }
 }
 
 /// The as-shot white balance of `id` on its own `wb.temp` scale.
@@ -157,20 +136,12 @@ pub fn values(s: &Session, id: PhotoId) -> Vec<(Slider, f64)> {
         return Vec::new();
     };
     let t = as_shot_temp(s, id);
-    Slider::ALL
-        .into_iter()
-        .map(|k| (k, k.read(&d, t)))
-        .collect()
+    Slider::ALL.into_iter().map(|k| (k, k.read(&d, t))).collect()
 }
 
 /// [`values`] as a JSON object keyed by [`Slider::key`].
 pub fn values_json(s: &Session, id: PhotoId) -> Value {
-    Value::Object(
-        values(s, id)
-            .into_iter()
-            .map(|(k, v)| (k.key().to_string(), json!(v)))
-            .collect(),
-    )
+    Value::Object(values(s, id).into_iter().map(|(k, v)| (k.key().to_string(), json!(v))).collect())
 }
 
 /// The `values` object of a `develop.set` call for these slider changes.
@@ -197,10 +168,7 @@ fn label(changes: &[(Slider, f64)]) -> &'static str {
 /// uses [`begin`], [`drag`] and [`end`] instead.
 pub fn set(s: &mut Session, id: PhotoId, changes: &[(Slider, f64)]) -> Result<Value> {
     if changes.is_empty() {
-        return Err(bad(
-            "br.adjust",
-            "give at least one of light, contrast, color, warmth, sharpness, vignette",
-        ));
+        return Err(bad("br.adjust", "give at least one of light, contrast, color, warmth, sharpness, vignette"));
     }
     s.execute_fn("br.adjust", |s| {
         activate(s, id)?;
@@ -226,17 +194,12 @@ pub fn begin(s: &mut Session, slider: Slider) -> Result<()> {
 /// Apply a value while dragging (silent: no undo step, nothing saved until [`end`]).
 pub fn drag(s: &mut Session, id: PhotoId, slider: Slider, v: f64) -> Result<()> {
     let values = develop_values(s, id, &[(slider, v)]);
-    s.execute("develop.set", &json!({ "values": values }))
-        .map(|_| ())
+    s.execute("develop.set", &json!({ "values": values })).map(|_| ())
 }
 
 /// Finish a drag: commits it as one undo step.
 pub fn end(s: &mut Session) -> Result<()> {
-    if s.interaction.is_some() {
-        s.end_interaction()
-    } else {
-        Ok(())
-    }
+    if s.interaction.is_some() { s.end_interaction() } else { Ok(()) }
 }
 
 /// LightCraft's Auto (exposure, contrast and tone from the photo's statistics) on `id`.
@@ -264,15 +227,9 @@ pub fn parse_changes(p: &Value) -> Result<Vec<(Slider, f64)>> {
         if k == "id" {
             continue;
         }
-        let slider = Slider::parse(k).ok_or_else(|| {
-            bad("br.adjust", format!("unknown slider `{k}`: use light, contrast, color, warmth, sharpness or vignette"))
-        })?;
-        let v = v.as_f64().ok_or_else(|| {
-            bad(
-                "br.adjust",
-                format!("`{k}` must be a number from -100 to 100"),
-            )
-        })?;
+        let slider = Slider::parse(k)
+            .ok_or_else(|| bad("br.adjust", format!("unknown slider `{k}`: use light, contrast, color, warmth, sharpness or vignette")))?;
+        let v = v.as_f64().ok_or_else(|| bad("br.adjust", format!("`{k}` must be a number from -100 to 100")))?;
         if !v.is_finite() || !(MIN..=MAX).contains(&v) {
             return Err(bad("br.adjust", format!("`{k}` must be from -100 to 100")));
         }
@@ -292,19 +249,12 @@ mod tests {
                 for v in [-100.0, -37.0, 0.0, 12.5, 100.0] {
                     let mut d = DevelopSettings::default();
                     for (c, x) in k.controls(v, t) {
-                        assert!(
-                            lightcraft_engine::develop::controls::set(&mut d, c, x),
-                            "{c}"
-                        );
+                        assert!(lightcraft_engine::develop::controls::set(&mut d, c, x), "{c}");
                     }
                     if k == Slider::Warmth {
                         d.wb.mode = WbMode::Custom;
                     }
-                    assert!(
-                        (k.read(&d, t) - v).abs() < 0.051,
-                        "{k:?} {v} @ {t}: {}",
-                        k.read(&d, t)
-                    );
+                    assert!((k.read(&d, t) - v).abs() < 0.051, "{k:?} {v} @ {t}: {}", k.read(&d, t));
                 }
             }
         }
@@ -331,9 +281,6 @@ mod tests {
         assert_eq!(Slider::parse("exposure"), None);
         assert!(parse_changes(&json!({"light": 120})).is_err());
         assert!(parse_changes(&json!({"glow": 1})).is_err());
-        assert_eq!(
-            parse_changes(&json!({"id": 3, "Licht": 20})).unwrap(),
-            vec![(Slider::Light, 20.0)]
-        );
+        assert_eq!(parse_changes(&json!({"id": 3, "Licht": 20})).unwrap(), vec![(Slider::Light, 20.0)]);
     }
 }

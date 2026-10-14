@@ -25,11 +25,7 @@ pub struct BrState {
 
 /// `(id, label, params)` of every `br.*` command.
 pub const COMMANDS: &[(&str, &str, &str)] = &[
-    (
-        "br.state",
-        "Photo State (BR)",
-        "{id?} — the simple view of a photo: slider values, format, look, undo/redo",
-    ),
+    ("br.state", "Photo State (BR)", "{id?} — the simple view of a photo: slider values, format, look, undo/redo"),
     ("br.looks", "List Looks (BR)", "{} — [{id, name, group}]"),
     (
         "br.look",
@@ -41,26 +37,14 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "Adjust (BR)",
         "{light?, contrast?, color?, warmth?, sharpness?, vignette?: -100..100 (0 = unchanged), id?} — absolute slider values, one undo step",
     ),
-    (
-        "br.auto",
-        "Auto (BR)",
-        "{id?} — automatic exposure, contrast and tone",
-    ),
-    (
-        "br.crop",
-        "Format (BR)",
-        "{format: original|1:1|4:5|9:16|16:9, id?} — largest centred crop, exact ratio in whole pixels",
-    ),
+    ("br.auto", "Auto (BR)", "{id?} — automatic exposure, contrast and tone"),
+    ("br.crop", "Format (BR)", "{format: original|1:1|4:5|9:16|16:9, id?} — largest centred crop, exact ratio in whole pixels"),
     (
         "br.export",
         "Export (BR)",
         "{preset: instagram|story|square|wide|full, dir?: folder, path?: exact file, id?} — instagram 1080×1350, story 1080×1920, square 1080×1080, wide 1920×1080, full = full size; the photo's edit is not changed",
     ),
-    (
-        "br.reset",
-        "Reset All (BR)",
-        "{id?} — back to how the photo was imported (looks, sliders, format, Pro edits)",
-    ),
+    ("br.reset", "Reset All (BR)", "{id?} — back to how the photo was imported (looks, sliders, format, Pro edits)"),
     ("br.undo", "Undo (BR)", "{}"),
     ("br.redo", "Redo (BR)", "{}"),
 ];
@@ -99,9 +83,7 @@ fn str_param<'a>(p: &'a Value, key: &str) -> Option<&'a str> {
 pub fn state(s: &Session, st: &BrState, id: lightcraft_engine::catalog::PhotoId) -> Value {
     let p = s.catalog.photo(id);
     let (w, h) = oriented_dims(s, id).unwrap_or((0.0, 0.0));
-    let look = looks::current(&st.look, s, id).map(|l| {
-        json!({"id": l.preset_id, "name": l.label.trim_start_matches("Look: "), "amount": l.amount})
-    });
+    let look = looks::current(&st.look, s, id).map(|l| json!({"id": l.preset_id, "name": l.label.trim_start_matches("Look: "), "amount": l.amount}));
     let crop = s.develop_of(id).map(|d| d.crop.geometry.rect_px(w, h));
     json!({
         "id": id.0,
@@ -129,15 +111,12 @@ pub fn execute(s: &mut Session, st: &mut BrState, id: &str, p: &Value) -> Result
         "br.looks" => Ok(looks::list_json(s)),
         "br.look" => {
             let photo = target(s, id, id_param(p))?;
-            let look =
-                str_param(p, "look").ok_or_else(|| bad(id, "missing `look` (see br.looks)"))?;
+            let look = str_param(p, "look").ok_or_else(|| bad(id, "missing `look` (see br.looks)"))?;
             let amount = match p.get("amount") {
                 None | Some(Value::Null) => looks::current(&st.look, s, photo)
                     .filter(|l| looks::find(s, look).is_some_and(|f| f.id == l.preset_id))
                     .map_or(100.0, |l| l.amount),
-                Some(v) => v
-                    .as_f64()
-                    .ok_or_else(|| bad(id, "`amount` must be a number"))?,
+                Some(v) => v.as_f64().ok_or_else(|| bad(id, "`amount` must be a number"))?,
             };
             looks::set_look(s, &mut st.look, photo, look, amount, false)
         }
@@ -152,25 +131,15 @@ pub fn execute(s: &mut Session, st: &mut BrState, id: &str, p: &Value) -> Result
         }
         "br.crop" => {
             let photo = target(s, id, id_param(p))?;
-            let f = str_param(p, "format")
-                .ok_or_else(|| bad(id, "missing `format`: original, 1:1, 4:5, 9:16 or 16:9"))?;
-            let f = Format::parse(f).ok_or_else(|| {
-                bad(
-                    id,
-                    format!("unknown format `{f}`: use original, 1:1, 4:5, 9:16 or 16:9"),
-                )
-            })?;
+            let f = str_param(p, "format").ok_or_else(|| bad(id, "missing `format`: original, 1:1, 4:5, 9:16 or 16:9"))?;
+            let f = Format::parse(f).ok_or_else(|| bad(id, format!("unknown format `{f}`: use original, 1:1, 4:5, 9:16 or 16:9")))?;
             crop::apply(s, photo, f)
         }
         "br.export" => {
             let photo = target(s, id, id_param(p))?;
             let name = str_param(p, "preset").unwrap_or("full");
-            let preset = Preset::parse(name).ok_or_else(|| {
-                bad(
-                    id,
-                    format!("unknown preset `{name}`: use instagram, story, square, wide or full"),
-                )
-            })?;
+            let preset =
+                Preset::parse(name).ok_or_else(|| bad(id, format!("unknown preset `{name}`: use instagram, story, square, wide or full")))?;
             let to = match (str_param(p, "path"), str_param(p, "dir")) {
                 (Some(_), Some(_)) => return Err(bad(id, "give `path` or `dir`, not both")),
                 (Some(path), None) => Target::File(PathBuf::from(path)),
@@ -210,35 +179,17 @@ mod tests {
         let mut s = Session::with_demo();
         let mut st = BrState::default();
         let id = s.active().unwrap().0;
-        let r = execute(
-            &mut s,
-            &mut st,
-            "br.adjust",
-            &json!({"light": 30, "Wärme": -20}),
-        )
-        .unwrap();
+        let r = execute(&mut s, &mut st, "br.adjust", &json!({"light": 30, "Wärme": -20})).unwrap();
         assert_eq!(r["sliders"]["light"], 30.0);
         assert_eq!(r["sliders"]["warmth"], -20.0);
         assert_eq!(s.undo.last().unwrap().label, "Anpassen");
-        execute(
-            &mut s,
-            &mut st,
-            "br.look",
-            &json!({"look": "Golden Hour", "amount": 60}),
-        )
-        .unwrap();
+        execute(&mut s, &mut st, "br.look", &json!({"look": "Golden Hour", "amount": 60})).unwrap();
         let state = execute(&mut s, &mut st, "br.state", &json!({})).unwrap();
         assert_eq!(state["look"]["id"], "lc.golden-hour");
         assert_eq!(state["look"]["amount"], 60.0);
         // a new amount replaces the look's step
         let undo = s.undo.len();
-        execute(
-            &mut s,
-            &mut st,
-            "br.look",
-            &json!({"look": "lc.golden-hour", "amount": 20}),
-        )
-        .unwrap();
+        execute(&mut s, &mut st, "br.look", &json!({"look": "lc.golden-hour", "amount": 20})).unwrap();
         assert_eq!(s.undo.len(), undo);
         assert_eq!(s.undo.last().unwrap().label, "Look: Golden Hour");
         let format0 = execute(&mut s, &mut st, "br.state", &json!({})).unwrap()["format"].clone();
@@ -246,20 +197,11 @@ mod tests {
         let state = execute(&mut s, &mut st, "br.state", &json!({"id": id})).unwrap();
         assert_eq!(state["format"], "4:5");
         assert_eq!(state["undo"], "Format 4:5");
-        assert!(
-            state["look"].is_null(),
-            "the format edit made the look final"
-        );
+        assert!(state["look"].is_null(), "the format edit made the look final");
         execute(&mut s, &mut st, "br.undo", &json!({})).unwrap();
-        assert_eq!(
-            execute(&mut s, &mut st, "br.state", &json!({})).unwrap()["format"],
-            format0
-        );
+        assert_eq!(execute(&mut s, &mut st, "br.state", &json!({})).unwrap()["format"], format0);
         execute(&mut s, &mut st, "br.reset", &json!({})).unwrap();
-        assert_eq!(
-            execute(&mut s, &mut st, "br.state", &json!({})).unwrap()["sliders"]["light"],
-            0.0
-        );
+        assert_eq!(execute(&mut s, &mut st, "br.state", &json!({})).unwrap()["sliders"]["light"], 0.0);
     }
 
     #[test]
@@ -277,9 +219,6 @@ mod tests {
         ] {
             assert!(execute(&mut s, &mut st, id, &p).is_err(), "{id} {p}");
         }
-        assert!(matches!(
-            execute(&mut s, &mut st, "br.nope", &json!({})),
-            Err(EngineError::UnknownCommand(_))
-        ));
+        assert!(matches!(execute(&mut s, &mut st, "br.nope", &json!({})), Err(EngineError::UnknownCommand(_))));
     }
 }

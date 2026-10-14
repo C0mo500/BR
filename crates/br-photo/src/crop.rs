@@ -28,13 +28,7 @@ pub enum Format {
 }
 
 impl Format {
-    pub const ALL: [Format; 5] = [
-        Format::Original,
-        Format::Square,
-        Format::Portrait,
-        Format::Story,
-        Format::Wide,
-    ];
+    pub const ALL: [Format; 5] = [Format::Original, Format::Square, Format::Portrait, Format::Story, Format::Wide];
 
     /// Name in commands: `original`, `1:1`, `4:5`, `9:16`, `16:9`.
     pub fn key(self) -> &'static str {
@@ -101,9 +95,7 @@ pub fn snap(g: CropGeometry, w: f64, h: f64, (aw, ah): (u32, u32)) -> CropGeomet
     let r = g.rect_px(w, h);
     let (aw, ah) = (aw.max(1) as f64, ah.max(1) as f64);
     // a hair of tolerance so a crop that is already exact does not lose a unit to float noise
-    let m = ((r.width() + 1e-6) / aw)
-        .min((r.height() + 1e-6) / ah)
-        .floor();
+    let m = ((r.width() + 1e-6) / aw).min((r.height() + 1e-6) / ah).floor();
     if m < 1.0 {
         return g;
     }
@@ -114,19 +106,13 @@ pub fn snap(g: CropGeometry, w: f64, h: f64, (aw, ah): (u32, u32)) -> CropGeomet
     let x0 = (c.x - cw / 2.0).round().clamp(0.0, (w - cw).max(0.0));
     let y0 = (c.y - ch / 2.0).round().clamp(0.0, (h - ch).max(0.0));
     let snapped = Rect::new(x0, y0, x0 + cw, y0 + ch);
-    let out = CropGeometry {
-        rect: snapped.scale(1.0 / w, 1.0 / h),
-        angle: g.angle,
-    };
+    let out = CropGeometry { rect: snapped.scale(1.0 / w, 1.0 / h), angle: g.angle };
     if g.angle == 0.0 || out.is_within_image(w, h) {
         out
     } else {
         // turned crops: stay centred where the larger crop was, which is inside the photo
         let centred = Rect::from_center(Point::new(c.x, c.y), cw, ch);
-        CropGeometry {
-            rect: centred.scale(1.0 / w, 1.0 / h),
-            angle: g.angle,
-        }
+        CropGeometry { rect: centred.scale(1.0 / w, 1.0 / h), angle: g.angle }
     }
 }
 
@@ -134,12 +120,7 @@ pub fn snap(g: CropGeometry, w: f64, h: f64, (aw, ah): (u32, u32)) -> CropGeomet
 pub fn fit(w: f64, h: f64, angle: f64, format: Format) -> CropGeometry {
     match format.ratio() {
         None => crop_fit_angle(w, h, angle, None),
-        Some((aw, ah)) => snap(
-            crop_fit_angle(w, h, angle, Some(aw as f64 / ah as f64)),
-            w,
-            h,
-            (aw, ah),
-        ),
+        Some((aw, ah)) => snap(crop_fit_angle(w, h, angle, Some(aw as f64 / ah as f64)), w, h, (aw, ah)),
     }
 }
 
@@ -160,15 +141,11 @@ pub fn detect(d: &DevelopSettings, w: f64, h: f64) -> Option<Format> {
         return Some(Format::Original);
     }
     let a = r.width() / r.height().max(1e-9);
-    Format::ALL
-        .into_iter()
-        .filter(|f| *f != Format::Original)
-        .find(|f| {
-            let (aw, ah) = f.ratio().unwrap_or((1, 1));
-            // half a pixel on the shorter side
-            (a - aw as f64 / ah as f64).abs()
-                <= 0.5 / r.width().min(r.height()).max(1.0) * a.max(1.0)
-        })
+    Format::ALL.into_iter().filter(|f| *f != Format::Original).find(|f| {
+        let (aw, ah) = f.ratio().unwrap_or((1, 1));
+        // half a pixel on the shorter side
+        (a - aw as f64 / ah as f64).abs() <= 0.5 / r.width().min(r.height()).max(1.0) * a.max(1.0)
+    })
 }
 
 /// The format of photo `id`'s current crop.
@@ -219,33 +196,19 @@ mod tests {
                     assert!((v - v.round()).abs() < 1e-6, "{f:?} {w}x{h}: {v}");
                 }
                 match f.ratio() {
-                    None => assert!(
-                        (r.width() - w).abs() < 1e-6 && (r.height() - h).abs() < 1e-6,
-                        "{w}x{h}: {r:?}"
-                    ),
+                    None => assert!((r.width() - w).abs() < 1e-6 && (r.height() - h).abs() < 1e-6, "{w}x{h}: {r:?}"),
                     Some((aw, ah)) => {
                         let m = r.width() / aw as f64;
-                        assert!(
-                            (m - m.round()).abs() < 1e-6
-                                && (r.height() - m * ah as f64).abs() < 1e-6,
-                            "{f:?} {w}x{h}: {r:?}"
-                        );
+                        assert!((m - m.round()).abs() < 1e-6 && (r.height() - m * ah as f64).abs() < 1e-6, "{f:?} {w}x{h}: {r:?}");
                         // as large as the photo allows: one more unit would not fit
-                        assert!(
-                            (m + 1.0) * aw as f64 > w + 1e-6 || (m + 1.0) * ah as f64 > h + 1e-6,
-                            "{f:?} {w}x{h} not maximal"
-                        );
+                        assert!((m + 1.0) * aw as f64 > w + 1e-6 || (m + 1.0) * ah as f64 > h + 1e-6, "{f:?} {w}x{h} not maximal");
                     }
                 }
                 let mut d = DevelopSettings::default();
                 d.crop.geometry = g;
                 // a photo already in that ratio is not cropped at all: that is "Original"
                 let whole = (r.width() - w).abs() < 0.5 && (r.height() - h).abs() < 0.5;
-                assert_eq!(
-                    detect(&d, w, h),
-                    Some(if whole { Format::Original } else { f }),
-                    "{w}x{h}"
-                );
+                assert_eq!(detect(&d, w, h), Some(if whole { Format::Original } else { f }), "{w}x{h}");
             }
         }
     }

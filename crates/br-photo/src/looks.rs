@@ -33,32 +33,17 @@ pub struct LookInfo {
 pub fn list(s: &Session) -> Vec<LookInfo> {
     let mut v: Vec<&Preset> = s.presets.iter().filter(|p| p.builtin).collect();
     v.extend(s.presets.iter().filter(|p| !p.builtin));
-    v.into_iter()
-        .map(|p| LookInfo {
-            id: p.id.clone(),
-            name: p.name.clone(),
-            group: p.group.clone(),
-        })
-        .collect()
+    v.into_iter().map(|p| LookInfo { id: p.id.clone(), name: p.name.clone(), group: p.group.clone() }).collect()
 }
 
 /// [`list`] as JSON.
 pub fn list_json(s: &Session) -> Value {
-    Value::Array(
-        list(s)
-            .into_iter()
-            .map(|l| json!({"id": l.id, "name": l.name, "group": l.group}))
-            .collect(),
-    )
+    Value::Array(list(s).into_iter().map(|l| json!({"id": l.id, "name": l.name, "group": l.group})).collect())
 }
 
 /// Find a look by id, or by name ignoring case.
 pub fn find<'a>(s: &'a Session, look: &str) -> Option<&'a Preset> {
-    s.presets.iter().find(|p| p.id == look).or_else(|| {
-        s.presets
-            .iter()
-            .find(|p| p.name.eq_ignore_ascii_case(look.trim()))
-    })
+    s.presets.iter().find(|p| p.id == look).or_else(|| s.presets.iter().find(|p| p.name.eq_ignore_ascii_case(look.trim())))
 }
 
 /// The look the Amount slider edits.
@@ -80,30 +65,18 @@ impl LookState {
     /// The look is still the latest undo step and nothing was committed since: changing its amount
     /// replaces it. (The same rule as LightCraft's own preset Amount slider.)
     pub fn is_current(&self, s: &Session) -> bool {
-        s.commits() == self.commits
-            && s.redo.is_empty()
-            && s.undo.last().is_some_and(|e| e.label == self.label)
+        s.commits() == self.commits && s.redo.is_empty() && s.undo.last().is_some_and(|e| e.label == self.label)
     }
 }
 
 /// The look on `id` whose amount can still be changed, if any.
 pub fn current<'a>(look: &'a Option<LookState>, s: &Session, id: PhotoId) -> Option<&'a LookState> {
-    look.as_ref().filter(|l| {
-        l.photo == id
-            && (l.is_current(s)
-                || s.interaction
-                    .as_ref()
-                    .is_some_and(|i| i.photo == id && i.label == l.label))
-    })
+    look.as_ref().filter(|l| l.photo == id && (l.is_current(s) || s.interaction.as_ref().is_some_and(|i| i.photo == id && i.label == l.label)))
 }
 
 /// `base` with `preset` at `amount` (1.0 = 100 %, up to 2.0). Pure.
 pub fn blend_look(base: &DevelopSettings, preset: &Preset, amount: f64) -> DevelopSettings {
-    let t = if amount.is_finite() {
-        amount.clamp(0.0, MAX_AMOUNT / 100.0)
-    } else {
-        1.0
-    };
+    let t = if amount.is_finite() { amount.clamp(0.0, MAX_AMOUNT / 100.0) } else { 1.0 };
     if t == 0.0 {
         return base.clone();
     }
@@ -123,26 +96,10 @@ pub fn blend_look(base: &DevelopSettings, preset: &Preset, amount: f64) -> Devel
     // when the photo's wheel had no colour.
     let tt = t.min(1.0);
     for (o, b, f) in [
-        (
-            &mut out.grading.shadows,
-            base.grading.shadows,
-            full.grading.shadows,
-        ),
-        (
-            &mut out.grading.midtones,
-            base.grading.midtones,
-            full.grading.midtones,
-        ),
-        (
-            &mut out.grading.highlights,
-            base.grading.highlights,
-            full.grading.highlights,
-        ),
-        (
-            &mut out.grading.global,
-            base.grading.global,
-            full.grading.global,
-        ),
+        (&mut out.grading.shadows, base.grading.shadows, full.grading.shadows),
+        (&mut out.grading.midtones, base.grading.midtones, full.grading.midtones),
+        (&mut out.grading.highlights, base.grading.highlights, full.grading.highlights),
+        (&mut out.grading.global, base.grading.global, full.grading.global),
     ] {
         if f.hue == b.hue {
             continue;
@@ -187,21 +144,9 @@ fn copy_discrete(out: &mut Value, full: &Value, patch: &Value) {
 ///   this photo, the previous amount is replaced, so the look stays exactly one undo step.
 ///
 /// An amount of 0 takes the look off again.
-pub fn set_look(
-    s: &mut Session,
-    look: &mut Option<LookState>,
-    id: PhotoId,
-    preset_id: &str,
-    amount_pct: f64,
-    live: bool,
-) -> Result<Value> {
+pub fn set_look(s: &mut Session, look: &mut Option<LookState>, id: PhotoId, preset_id: &str, amount_pct: f64, live: bool) -> Result<Value> {
     s.execute_fn("br.look", |s| {
-        let preset = find(s, preset_id).cloned().ok_or_else(|| {
-            bad(
-                "br.look",
-                format!("unknown look `{preset_id}`: see br.looks"),
-            )
-        })?;
+        let preset = find(s, preset_id).cloned().ok_or_else(|| bad("br.look", format!("unknown look `{preset_id}`: see br.looks")))?;
         if s.develop_of(id).is_none() {
             return Err(bad("br.look", format!("no such photo {}", id.0)));
         }
@@ -213,22 +158,13 @@ pub fn set_look(
             if s.active() != Some(id) {
                 return Err(bad("br.look", "a live look needs the active photo"));
             }
-            if s.interaction
-                .as_ref()
-                .is_none_or(|i| i.photo != id || i.label != label)
-            {
+            if s.interaction.as_ref().is_none_or(|i| i.photo != id || i.label != label) {
                 s.begin_interaction(&label)?;
             }
-        } else if s
-            .interaction
-            .as_ref()
-            .is_some_and(|i| i.photo == id && i.label == label)
-        {
+        } else if s.interaction.as_ref().is_some_and(|i| i.photo == id && i.label == label) {
             s.cancel_interaction()?;
         }
-        let prev = look
-            .take()
-            .filter(|l| l.photo == id && l.preset_id == preset.id && l.is_current(s));
+        let prev = look.take().filter(|l| l.photo == id && l.preset_id == preset.id && l.is_current(s));
         let base = match (&prev, &s.interaction) {
             (Some(l), _) => l.base.clone(),
             (None, Some(i)) if live => i.original.clone(),
@@ -239,14 +175,7 @@ pub fn set_look(
             s.undo_step()?;
         }
         s.set_develop(id, next, &label)?;
-        *look = Some(LookState {
-            photo: id,
-            preset_id: preset.id.clone(),
-            label,
-            amount: amount_pct,
-            base,
-            commits: s.commits(),
-        });
+        *look = Some(LookState { photo: id, preset_id: preset.id.clone(), label, amount: amount_pct, base, commits: s.commits() });
         Ok(json!({"id": id.0, "look": preset.id, "name": preset.name, "amount": amount_pct}))
     })
 }
@@ -266,11 +195,7 @@ mod tests {
         let base = DevelopSettings::default();
         let warm = blend_look(&base, &preset(&s, "lc.warm-glow"), 0.3);
         assert_eq!(warm.wb.mode, WbMode::Custom, "warmth must show below 50 %");
-        assert!(
-            warm.wb.temp > 6500.0 && warm.wb.temp < 7200.0,
-            "{}",
-            warm.wb.temp
-        );
+        assert!(warm.wb.temp > 6500.0 && warm.wb.temp < 7200.0, "{}", warm.wb.temp);
         let bw = blend_look(&base, &preset(&s, "lc.bw-soft"), 0.4);
         assert_eq!(bw.treatment, Treatment::Bw);
     }
@@ -324,16 +249,12 @@ mod tests {
         let id = s.active().unwrap();
         let mut look = None;
         set_look(&mut s, &mut look, id, "lc.moody", 100.0, false).unwrap();
-        s.execute(
-            "develop.set",
-            &json!({"control": "light.contrast", "value": 30}),
-        )
-        .unwrap();
+        s.execute("develop.set", &json!({"control": "light.contrast", "value": 30})).unwrap();
         assert!(current(&look, &s, id).is_none());
         let undo0 = s.undo.len();
         set_look(&mut s, &mut look, id, "lc.moody", 50.0, false).unwrap();
         assert_eq!(s.undo.len(), undo0 + 1);
-        assert_eq!(s.develop_of(id).unwrap().light.contrast > 0.0, true);
+        assert!(s.develop_of(id).unwrap().light.contrast > 0.0);
     }
 
     #[test]
