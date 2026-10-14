@@ -238,6 +238,7 @@ fn recognise(
     };
     let n = inputs.len() as f32;
     let mut out = Vec::new();
+    let mut unreadable = Vec::new();
     for (i, input) in inputs.into_iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return cancelled();
@@ -249,6 +250,7 @@ fn recognise(
             Ok(b) => b,
             Err(e) => {
                 log::warn!("captions: no sound from {}: {e}", input.name);
+                unreadable.push(format!("Ton von „{}“ nicht lesbar: {e}", input.name));
                 continue;
             }
         };
@@ -266,6 +268,11 @@ fn recognise(
     }
     if cancel.load(Ordering::Relaxed) {
         return cancelled();
+    }
+    if out.is_empty()
+        && let Some(first) = unreadable.into_iter().next()
+    {
+        return Err(first);
     }
     if out.iter().all(|(_, t)| t.words.is_empty()) {
         return Err("im Ton wurde keine Sprache erkannt".into());

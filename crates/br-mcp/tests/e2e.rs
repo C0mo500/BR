@@ -193,7 +193,10 @@ fn null_means_not_given_and_batches_stay_one_array() {
 }
 
 fn have_ffmpeg() -> bool {
-    std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
+    let found = std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success());
+    // in CI (BR_REQUIRE_FFMPEG) the video tests must run, not skip
+    assert!(found || std::env::var_os("BR_REQUIRE_FFMPEG").is_none(), "ffmpeg is required (BR_REQUIRE_FFMPEG is set)");
+    found
 }
 
 #[test]
@@ -233,7 +236,16 @@ fn an_agent_cuts_a_vertical_video_and_looks_at_it() {
     let first = looks["presets"][0]["name"].as_str().unwrap().to_string();
     ok(&mut s, "br_video_filter", json!({"preset": first}));
     let undo = ok(&mut s, "br_video_undo", json!({}));
-    assert!(undo["undone"].is_string() || undo["undone"].is_boolean() || !undo.is_null(), "{undo}");
+    assert!(undo["undone"].as_str().is_some_and(|l| l.starts_with("Filter")), "the filter is undone: {undo}");
+    let seq = ok(&mut s, "film_run", json!({"command": "sequence.inspect"}));
+    assert!(
+        seq["video"].as_array().unwrap().iter().flat_map(|t| t["items"].as_array().unwrap()).all(|c| !c["effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["effect"] == "lumetri")),
+        "no look left: {seq}"
+    );
 
     // a frame as an image
     let r = call(&mut s, "br_video_preview", json!({"seconds": 0.5, "max_side": 256}));

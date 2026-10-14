@@ -325,7 +325,10 @@ fn a_page_keeps_the_layout_it_was_left_with() {
 }
 
 fn have_ffmpeg() -> bool {
-    std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
+    let found = std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success());
+    // in CI (BR_REQUIRE_FFMPEG) the video tests must run, not skip
+    assert!(found || std::env::var_os("BR_REQUIRE_FFMPEG").is_none(), "ffmpeg is required (BR_REQUIRE_FFMPEG is set)");
+    found
 }
 
 /// A short phone-style clip (with sound) written by ffmpeg.
@@ -445,6 +448,23 @@ fn the_tool_row_cuts_speeds_filters_and_reshapes_the_video() {
     let after = br_video::state(&mut app.fc.session).unwrap()["seconds"].as_f64().unwrap();
     assert!((before - after - 0.5).abs() < 0.1, "1 s at 2× is 0.5 s: {before} → {after}");
     snapshot(&d, "schnitt-speed");
+
+    // Löschen closes the gap the clip leaves
+    let before = br_video::state(&mut app.fc.session).unwrap()["seconds"].as_f64().unwrap();
+    let n = clips(&mut app);
+    d.click(&mut app, "cut.delete").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(clips(&mut app), n - 1);
+    let after = br_video::state(&mut app.fc.session).unwrap()["seconds"].as_f64().unwrap();
+    assert!((before - after - 0.5).abs() < 0.1, "the 0.5 s clip is gone and the gap closed: {before} → {after}");
+    let first = app.fc.session.active_sequence().unwrap().video_tracks[0].items[0].id;
+    app.fc.session.state.selection = vec![first];
+
+    // Ton trennen: picture and sound move on their own afterwards
+    d.click(&mut app, "cut.detach").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    let (_, it) = app.fc.session.active_sequence().unwrap().find_item(first).unwrap();
+    assert!(it.link.is_none(), "detached");
 
     // a filter on the selection
     d.click(&mut app, "cut.filter").unwrap();
@@ -573,6 +593,8 @@ fn the_cut_layout_has_the_source_monitor_and_quick_export_opens() {
     app.fc.ui.dock.panels(&mut panels);
     assert!(panels.contains(&filmcraft_ui_egui::dock::PanelKind::Source), "{panels:?}");
     br_video::execute(&mut app.fc.session, "br.video.new", &serde_json::json!({"format": "16:9"})).unwrap();
+    // something to export
+    br_video::execute(&mut app.fc.session, "br.video.text", &serde_json::json!({"text": "Hallo"})).unwrap();
     assert!(d.settle(&mut app, SETTLE));
     d.click(&mut app, "video.export").unwrap();
     assert!(d.settle(&mut app, SETTLE));

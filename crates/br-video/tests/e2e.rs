@@ -9,7 +9,10 @@ use br_video::Session;
 use serde_json::{Value, json};
 
 fn have(tool: &str) -> bool {
-    Command::new(tool).arg("-version").output().is_ok_and(|o| o.status.success())
+    let found = Command::new(tool).arg("-version").output().is_ok_and(|o| o.status.success());
+    // in CI (BR_REQUIRE_FFMPEG) the video tests must run, not skip
+    assert!(found || std::env::var_os("BR_REQUIRE_FFMPEG").is_none(), "ffmpeg is required (BR_REQUIRE_FFMPEG is set)");
+    found
 }
 
 fn dir(name: &str) -> PathBuf {
@@ -140,10 +143,23 @@ fn a_vertical_video_from_phone_clips_with_title_captions_and_music() {
     let undo1 = s.history.undo.len();
     ok(&mut s, "br.video.music", json!({"path": m.to_string_lossy()}));
     assert_eq!(s.history.undo.len(), undo1 + 1, "music with ducking is one undo step");
+    // the music is on its own track, as long as the video, and lowered where the clips have sound
+    let q = s.active_sequence().unwrap();
+    let music = q
+        .audio_tracks
+        .iter()
+        .flat_map(|t| t.items.iter())
+        .find(|it| it.essential.as_ref().is_some_and(|e| e.kind == filmcraft_project::AudioType::Music))
+        .expect("a music clip");
+    let picture_end = q.video_tracks[0].items.iter().map(|i| i.end()).max().unwrap();
+    assert!(music.end() <= picture_end, "never longer than the picture");
+    let keys = music.effect("volume").and_then(|v| v.params.get("level")).map_or(0, |p| p.keyframes.len());
+    assert!(keys >= 2, "ducked under the video's sound: {keys} volume keyframes");
 
     let out = d.join("tiktok.mp4");
     let r = ok(&mut s, "br.video.export", json!({"preset": "social", "path": out.to_string_lossy(), "wait": true}));
     assert!(out.exists(), "export wrote nothing: {r}");
+    assert!(!br_video::part_path(&out).exists(), "the hidden part file became the export");
     let p = probe(&out);
     let (v, au) = (stream(&p, "video"), stream(&p, "audio"));
     assert_eq!((v["codec_name"].as_str(), v["width"].as_u64(), v["height"].as_u64()), (Some("h264"), Some(1080), Some(1920)), "{p}");
@@ -523,5 +539,42 @@ fn captions_skip_the_music_and_are_burned_into_the_export() {
     assert_eq!(fa.len(), fb.len());
     let differing = fa.iter().zip(&fb).filter(|(x, y)| x.abs_diff(**y) > 40).count();
     assert!(differing > 200, "captions are in the picture: {differing} pixels differ");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_failed_or_cancelled_export_leaves_no_file() {
+    if !have("ffmpeg") {
+        return;
+    }
+    let d = dir("failed-export");
+    let a = d.join("a.mp4");
+    phone_h264(&a, 2);
+    let mut s = Session::default();
+    ok(&mut s, "br.video.add", json!({"paths": [a.to_string_lossy()]}));
+    // a folder that cannot be written: the waited-for export is an error, not "ok"
+    let blocked = d.join("blocked");
+    std::fs::write(&blocked, b"a file, not a folder").unwrap();
+    let out = blocked.join("x.mp4");
+    let e = br_video::execute(&mut s, "br.video.export", &json!({"preset": "video", "path": out.to_string_lossy()})).unwrap_err();
+    assert!(!e.is_empty());
+    assert!(!out.exists() && !br_video::part_path(&out).exists());
+    // started in the background and cancelled: nothing is left behind
+    let out = d.join("cancel.mp4");
+    let r = ok(&mut s, "br.video.export", json!({"preset": "youtube4k", "path": out.to_string_lossy(), "wait": false}));
+    let job = r["job"].as_u64().unwrap();
+    let part = std::path::PathBuf::from(r["part"].as_str().unwrap());
+    s.execute("jobs.cancel", json!({"job": job})).unwrap();
+    let t0 = std::time::Instant::now();
+    let end = loop {
+        if let Some(end) = br_video::settle_export(&s, job, &part, &out) {
+            break end;
+        }
+        assert!(t0.elapsed().as_secs() < 120);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    // a cancel that came too late is a finished file; either way nothing half-written stays
+    assert!(end.is_err() == !out.exists(), "{end:?}");
+    assert!(!part.exists());
     let _ = std::fs::remove_dir_all(&d);
 }

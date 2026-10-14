@@ -170,13 +170,21 @@ fn accept_loop(listener: TcpListener, senders: Senders, token: String, ctx: egui
     }
 }
 
+/// How long a new connection may take to sign in (a connection that never does must not keep its
+/// place: there are only [`MAX_CONNECTIONS`]).
+const AUTH_WITHIN: Duration = Duration::from_secs(10);
+
 fn serve(stream: TcpStream, senders: &Senders, token: &str, ctx: &egui::Context) {
-    let Ok(read) = stream.try_clone() else { return };
+    let (Ok(read), Ok(guard)) = (stream.try_clone(), stream.try_clone()) else { return };
+    // the timeout is the socket's, for every handle of it
+    let _ = guard.set_read_timeout(Some(AUTH_WITHIN));
     let mut authed = false;
     serve_lines(read, stream, |method, params| {
         if !authed {
             if method == "auth" && params.get("token").and_then(Value::as_str).is_some_and(|t| same(t, token)) {
                 authed = true;
+                // signed in: requests may be minutes apart
+                let _ = guard.set_read_timeout(None);
                 return Some(json!({"ok": true, "result": {"server": "br", "version": env!("CARGO_PKG_VERSION")}}));
             }
             // a wrong token closes the connection: nothing is run without it
@@ -341,7 +349,7 @@ fn serve_lines<R: Read, W: Write>(read: R, mut out: W, mut handle: impl FnMut(St
 
 /// A reply that waits for background work (an export, a caption recognition).
 pub(crate) enum Pending {
-    Export { job: u64, path: PathBuf, reply: Sender<Value> },
+    Export { job: u64, path: PathBuf, part: PathBuf, reply: Sender<Value> },
     Captions { reply: Sender<Value> },
 }
 
@@ -373,22 +381,16 @@ fn poll_pending(app: &mut BrApp) {
     let mut still = Vec::new();
     for p in std::mem::take(&mut app.pending) {
         match p {
-            Pending::Export { job, path, reply } => {
-                let done = match app.fc.session.jobs.iter().find(|j| j.id == job) {
-                    Some(j) => j.result.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|r| r.as_ref().map(|_| ()).map_err(Clone::clone)),
-                    None => Some(if path.exists() { Ok(()) } else { Err("the export was cancelled".to_string()) }),
-                };
-                match done {
-                    None => still.push(Pending::Export { job, path, reply }),
-                    Some(Ok(())) => {
-                        let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                        let _ = reply.send(ok(json!({"path": path, "bytes": bytes})));
-                    }
-                    Some(Err(e)) => {
-                        let _ = reply.send(err(e));
-                    }
+            Pending::Export { job, path, part, reply } => match br_video::settle_export(&app.fc.session, job, &part, &path) {
+                None => still.push(Pending::Export { job, path, part, reply }),
+                Some(Ok(())) => {
+                    let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                    let _ = reply.send(ok(json!({"path": path, "bytes": bytes})));
                 }
-            }
+                Some(Err(e)) => {
+                    let _ = reply.send(err(e));
+                }
+            },
             Pending::Captions { reply } => match crate::cut::caption_result(app) {
                 None => still.push(Pending::Captions { reply }),
                 Some(r) => {
@@ -460,9 +462,9 @@ fn run_command(app: &mut BrApp, ctx: &egui::Context, id: &str, params: Value, re
             let mut q = params.clone();
             q["wait"] = json!(false);
             match br_video::execute(&mut app.fc.session, id, &q) {
-                Ok(v) => match (v.get("job").and_then(Value::as_u64), v.get("path").and_then(Value::as_str)) {
-                    (Some(job), Some(path)) => {
-                        app.pending.push(Pending::Export { job, path: PathBuf::from(path), reply: reply.clone() });
+                Ok(v) => match (v.get("job").and_then(Value::as_u64), v.get("path").and_then(Value::as_str), v.get("part").and_then(Value::as_str)) {
+                    (Some(job), Some(path), Some(part)) => {
+                        app.pending.push(Pending::Export { job, path: PathBuf::from(path), part: PathBuf::from(part), reply: reply.clone() });
                         None
                     }
                     _ => Some(ok(v)),

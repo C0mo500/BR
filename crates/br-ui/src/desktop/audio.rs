@@ -55,12 +55,22 @@ enum Note {
     NoDevice,
 }
 
+/// FilmCraft speaks German now (its catalogue lacks the audio notes).
+fn german() -> bool {
+    filmcraft_ui_egui::i18n::current() == filmcraft_ui_egui::i18n::Language::De
+}
+
 impl Note {
     fn text(&self) -> String {
         use filmcraft_ui_egui::i18n::{fmt, t};
         match self {
+            // BR speaks German where FilmCraft's catalogue has no German for these
+            Note::Fallback(device) if german() => {
+                format!("Audio-Hardware: das Standard-Ausgabegerät lässt sich nicht öffnen; es wird „{device}“ benutzt")
+            }
+            Note::NoDevice if german() => "Kein Audio-Ausgabegerät gefunden: Wiedergabe ohne Ton (Einstellungen › Audio-Hardware)".to_string(),
             Note::Fallback(device) => fmt(t("Audio hardware: the default output device cannot be opened; using '{device}'"), &[("device", device)]),
-            Note::NoDevice => t("No audio output device found: playing without sound (check Settings ▸ Audio Hardware)").to_string(),
+            Note::NoDevice => t("No audio output device found: playing without sound (check Settings › Audio Hardware)").to_string(),
         }
     }
 }

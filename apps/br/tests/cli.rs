@@ -248,7 +248,10 @@ fn only_the_window_keeps_settings_and_a_log() {
 }
 
 fn have_ffmpeg() -> bool {
-    Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
+    let found = Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success());
+    // in CI (BR_REQUIRE_FFMPEG) the video tests must run, not skip
+    assert!(found || std::env::var_os("BR_REQUIRE_FFMPEG").is_none(), "ffmpeg is required (BR_REQUIRE_FFMPEG is set)");
+    found
 }
 
 fn phone_clip(path: &std::path::Path, seconds: u32) {

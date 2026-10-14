@@ -97,7 +97,10 @@ enum PickFor {
 /// A video export FilmCraft runs (a job in its session).
 struct ExportJob {
     job: u64,
+    /// Where the file goes once it is complete.
     path: PathBuf,
+    /// Where it is written until then (hidden).
+    part: PathBuf,
 }
 
 /// The video pages' own state.
@@ -191,7 +194,8 @@ pub fn draw_toast(app: &mut BrApp, ctx: &egui::Context) {
         app.fc.toast = None;
         return;
     }
-    let Some(area) = app.cut.area else { return };
+    // on the video pages over FilmCraft's area, on Foto over the window
+    let area = app.cut.area.filter(|_| app.page.is_video()).unwrap_or(ctx.content_rect());
     let t = Theme::get(ctx);
     let max_w = (area.width() - 48.0).clamp(200.0, 640.0);
     let r = egui::Area::new(egui::Id::new("br_toast"))
@@ -218,17 +222,29 @@ pub fn draw_toast(app: &mut BrApp, ctx: &egui::Context) {
 /// The window is asked to close while a video export or a caption recognition runs: the export
 /// is finished first (the window then closes); asked again, it is stopped and the window closes.
 pub fn on_close_request(app: &mut BrApp, ctx: &egui::Context) {
-    if let Some(job) = &app.cut.captions {
-        job.cancel();
-    }
-    let Some(job) = app.cut.export.as_ref().map(|e| e.job) else { return };
-    if app.cut.close_after_export {
-        let _ = br_video::execute(&mut app.fc.session, "jobs.cancel", &json!({"job": job}));
+    let running = running_exports(app);
+    if running.is_empty() || app.cut.close_after_export {
+        // the window closes: what runs in the background stops
+        for job in running {
+            let _ = br_video::execute(&mut app.fc.session, "jobs.cancel", &json!({"job": job}));
+        }
+        if let Some(job) = &app.cut.captions {
+            job.cancel();
+        }
         return;
     }
     app.cut.close_after_export = true;
     ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+    if !app.page.is_video() {
+        app.open(Page::Schnitt);
+    }
     toast(app, ctx, "Das Video wird noch gespeichert: BR schließt sich, sobald es fertig ist. Noch einmal schließen bricht den Export ab.");
+}
+
+/// FilmCraft's export jobs that are still running (BR's Exportieren, the Ausgabe page, its queue,
+/// an agent's).
+fn running_exports(app: &BrApp) -> Vec<u64> {
+    app.fc.session.jobs.iter().filter(|j| j.result.lock().unwrap_or_else(|e| e.into_inner()).is_none()).map(|j| j.id).collect()
 }
 
 /// Run one of BR's video commands (or FilmCraft's) on the video project; a failure is told in the
@@ -246,8 +262,30 @@ fn run(app: &mut BrApp, ctx: &egui::Context, id: &str, params: Value) -> Option<
 
 /// FilmCraft's errors start with the command id: the reader wants only the reason.
 fn readable(e: &str) -> String {
-    match e.split_once(": ") {
-        Some((cmd, rest)) if cmd.contains('.') && !cmd.contains(' ') => rest.to_string(),
+    let mut e = e.trim();
+    // "br.video.x: …", FilmCraft's "invalid parameters for `x`: …" and "command `x` is not
+    // available right now: …"
+    loop {
+        // a command id: `br.video.add`, `file.import` (not a file name, which has a `/` or an
+        // extension after the last dot only)
+        let is_id =
+            |h: &str| h.starts_with(|c: char| c.is_ascii_lowercase()) && h.contains('.') && h.chars().all(|c| c.is_ascii_alphanumeric() || c == '.');
+        let next = match e.split_once(": ") {
+            Some((cmd, rest))
+                if is_id(cmd)
+                    && !cmd.rsplit('.').next().is_some_and(|ext| matches!(ext, "mp4" | "mov" | "jpg" | "png" | "wav" | "mp3" | "m4a" | "srt")) =>
+            {
+                rest
+            }
+            Some((head, rest)) if head.starts_with("invalid parameters for `") || (head.starts_with("command `") && head.ends_with("right now")) => {
+                rest
+            }
+            _ => break,
+        };
+        e = next.trim();
+    }
+    match e {
+        "cancelled" => "abgebrochen".to_string(),
         _ => e.to_string(),
     }
 }
@@ -291,6 +329,12 @@ pub fn add_paths(app: &mut BrApp, ctx: &egui::Context, paths: Vec<String>) {
 pub fn open_files(app: &mut BrApp, ctx: &egui::Context, paths: Vec<String>) {
     // absolute: FilmCraft keeps paths as given (a saved project would lose its media)
     let paths: Vec<String> = paths.into_iter().map(|p| std::path::absolute(&p).map(|a| a.to_string_lossy().into_owned()).unwrap_or(p)).collect();
+    // a dropped folder: the media in it
+    let paths = br_video::expand_folders(&paths);
+    if paths.is_empty() {
+        toast(app, ctx, "Darin sind keine Videos, Fotos oder Musik, die BR öffnen kann");
+        return;
+    }
     let kind = |p: &String| br_video::file_kind(p).unwrap_or("");
     if let Some(project) = paths.iter().find(|p| kind(p) == "project") {
         if let Err(e) = filmcraft_ui_egui::menus::invoke(&mut app.fc, ctx, "file.open", json!({"path": project})) {
@@ -311,11 +355,14 @@ pub fn open_files(app: &mut BrApp, ctx: &egui::Context, paths: Vec<String>) {
 pub fn header_tools(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
     let video = has_video(app);
     let open = app.cut.popover();
-    let label = match app.cut.export.as_ref().and_then(|j| job_progress(app, j.job)) {
+    let job = app.cut.export.as_ref().map(|j| j.job).or_else(|| running_exports(app).first().copied());
+    let label = match job.and_then(|j| job_progress(app, j)) {
         Some(f) => format!("  Export {} %  ", (f * 100.0).round()),
         None => "  Exportieren  ".to_string(),
     };
-    let r = style::button(ui, t, &label, true, video).on_hover_text("Das Video als MP4 für TikTok, Reels, YouTube … speichern");
+    // something to export: a video with something in it
+    let has_content = app.fc.session.active_sequence().is_some_and(|q| q.duration().0 > 0);
+    let r = style::button(ui, t, &label, true, has_content).on_hover_text("Das Video als MP4 für TikTok, Reels, YouTube … speichern");
     app.widgets.insert("video.export".into(), r.rect);
     if r.clicked() {
         toggle(app, Popover::Export, r.rect);
@@ -374,12 +421,45 @@ pub fn toolbar(app: &mut BrApp, ui: &mut Ui) {
                 tools(app, ui, &t);
             });
         });
+    // what runs in the background, in a row of its own under the tools
+    if app.cut.captions.is_some() {
+        egui::Panel::top("br_cut_progress").exact_size(28.0).frame(egui::Frame::NONE.fill(t.bar).inner_margin(egui::Margin::symmetric(12, 0))).show(
+            ui,
+            |ui| {
+                ui.horizontal_centered(|ui| {
+                    let Some(job) = &app.cut.captions else { return };
+                    let (f, text) = job.progress();
+                    ui.label(RichText::new("Untertitel").size(12.0).color(t.text));
+                    ui.add(egui::ProgressBar::new(f).desired_width(120.0).desired_height(6.0));
+                    let w = (ui.available_width() - 110.0).max(40.0);
+                    let g = style::elided(ui, &text, 12.0, t.dim, w);
+                    ui.label(g);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let r = tool(ui, &t, Icon::Close, "Abbrechen", "Die Spracherkennung abbrechen", false, true);
+                        app.widgets.insert("cut.captions.cancel".into(), r.rect);
+                        if r.clicked()
+                            && let Some(job) = &app.cut.captions
+                        {
+                            job.cancel();
+                        }
+                    });
+                });
+            },
+        );
+    }
 }
 
 fn tools(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
     let ctx = ui.ctx().clone();
     let video = has_video(app);
     let selected = br_video::selection(&app.fc.session) > 0;
+    let (cuts, linked) = {
+        let s = &app.fc.session;
+        let q = s.active_sequence();
+        let main = q.and_then(|q| q.video_tracks.first()).map_or(0, |t| t.items.len());
+        let linked = q.is_some_and(|q| s.state.selection.iter().any(|c| q.find_item(*c).is_some_and(|(_, it)| it.link.is_some())));
+        (main >= 2, linked)
+    };
     let open = app.cut.popover();
     let picking = app.cut.picking.is_some();
     let click = |app: &mut BrApp, key: &str, r: egui::Response| {
@@ -408,7 +488,7 @@ fn tools(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
     if let Some(rect) = click(app, "filter", r) {
         toggle(app, Popover::Filter, rect);
     }
-    let r = tool(ui, t, Icon::Automate, "Übergang", "Überblenden zwischen den ausgewählten Clips (ohne Auswahl: an allen Schnitten)", false, video);
+    let r = tool(ui, t, Icon::Automate, "Übergang", "Überblenden zwischen den ausgewählten Clips (ohne Auswahl: an allen Schnitten)", false, cuts);
     if click(app, "transition", r).is_some()
         && let Some(v) = run(app, &ctx, "br.video.transition", json!({}))
     {
@@ -430,9 +510,10 @@ fn tools(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
     if let Some(rect) = click(app, "speed", r) {
         toggle(app, Popover::Speed, rect);
     }
-    let r = tool(ui, t, Icon::Link, "Ton trennen", "Bild und Ton der ausgewählten Clips trennen (oder wieder verbinden)", false, selected);
-    if click(app, "detach", r).is_some() {
-        run(app, &ctx, "br.video.detachAudio", json!({}));
+    let r =
+        tool(ui, t, Icon::Link, "Ton trennen", "Bild und Ton der ausgewählten Clips trennen (wieder verbinden: Clip › Verknüpfen)", false, linked);
+    if click(app, "detach", r).is_some() && run(app, &ctx, "br.video.detachAudio", json!({})).is_some() {
+        toast(app, &ctx, "Ton getrennt: Bild und Ton lassen sich jetzt einzeln bewegen und löschen");
     }
     divider(ui, t);
     let h = &app.fc.session.history;
@@ -447,20 +528,6 @@ fn tools(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
     if click(app, "redo", r).is_some() {
         invoke(app, &ctx, "edit.redo");
     }
-
-    // what runs in the background, at the right
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if let Some(job) = &app.cut.captions {
-            let (f, text) = job.progress();
-            let r = tool(ui, t, Icon::Close, "Abbrechen", "Die Spracherkennung abbrechen", false, true);
-            app.widgets.insert("cut.captions.cancel".into(), r.rect);
-            if r.clicked() {
-                job.cancel();
-            }
-            ui.add(egui::ProgressBar::new(f).desired_width(90.0).desired_height(6.0));
-            ui.label(RichText::new(text).size(12.0).color(t.dim));
-        }
-    });
 }
 
 // ── file dialogs ────────────────────────────────────────────────────────────────────────────────
@@ -514,18 +581,14 @@ fn job_progress(app: &BrApp, job: u64) -> Option<f32> {
 /// Per frame on every page: a finished export or recognition is told (and captions are put in).
 pub fn poll(app: &mut BrApp, ctx: &egui::Context) {
     poll_pick(app, ctx);
+    if app.cut.close_after_export && running_exports(app).is_empty() && app.cut.export.is_none() {
+        app.cut.close_after_export = false;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
     if let Some(e) = &app.cut.export {
-        let (job, path) = (e.job, e.path.clone());
-        let result = match app.fc.session.jobs.iter().find(|j| j.id == job) {
-            Some(j) => j.result.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|r| r.as_ref().map(|_| ()).map_err(Clone::clone)),
-            // FilmCraft let go of it: the file tells
-            None => Some(if path.exists() { Ok(()) } else { Err("abgebrochen".to_string()) }),
-        };
-        if let Some(r) = result {
+        let (job, path, part) = (e.job, e.path.clone(), e.part.clone());
+        if let Some(r) = br_video::settle_export(&app.fc.session, job, &part, &path) {
             app.cut.export = None;
-            if std::mem::take(&mut app.cut.close_after_export) {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
             match r {
                 Ok(_) => {
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -554,6 +617,10 @@ pub fn poll(app: &mut BrApp, ctx: &egui::Context) {
 
 fn start_export(app: &mut BrApp, ctx: &egui::Context) {
     let dir = app.cut.export_dir.clone();
+    if dir.to_str().is_none() {
+        toast(app, ctx, format!("{}: der Ordnername ist kein gültiger Text (UTF-8); bitte einen anderen Ordner wählen", dir.display()));
+        return;
+    }
     if let Err(e) = std::fs::create_dir_all(&dir) {
         toast(app, ctx, format!("{}: {e}", dir.display()));
         return;
@@ -565,7 +632,8 @@ fn start_export(app: &mut BrApp, ctx: &egui::Context) {
     if let Some(v) = run(app, ctx, "br.video.export", params)
         && let Some(job) = v.get("job").and_then(Value::as_u64)
     {
-        app.cut.export = Some(ExportJob { job, path });
+        let part = v.get("part").and_then(Value::as_str).map_or_else(|| br_video::part_path(&path), PathBuf::from);
+        app.cut.export = Some(ExportJob { job, path, part });
         app.cut.last_export = None;
     }
 }
@@ -749,10 +817,11 @@ fn filter_panel(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
     }
     ui.add_space(4.0);
     let mut group = String::new();
-    for (name, folder) in &looks {
+    // FilmCraft's technical looks (log, broadcast) are grading tools, not filters
+    for (name, folder) in looks.iter().filter(|(_, f)| f != "Technical") {
         if *folder != group {
             group = folder.clone();
-            style::heading(ui, t, &group.to_uppercase());
+            style::heading(ui, t, &look_group(&group).to_uppercase());
         }
         let r = choice(ui, t, name, "", false, width);
         app.widgets.insert(format!("filter.{name}"), r.rect);
@@ -813,6 +882,20 @@ fn speed_panel(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
     note(ui, t, "Die Clips danach rücken nach. Tempo-Rampen und Rückwärts: Clip › Geschwindigkeit/Dauer.");
 }
 
+/// FilmCraft's look folders in German.
+fn look_group(folder: &str) -> &str {
+    match folder {
+        "Cinematic" => "Kino",
+        "Film Emulation" => "Filmlook",
+        "Monochrome" => "Schwarzweiß",
+        "Creative" => "Kreativ",
+        "Vintage" => "Vintage",
+        "Portrait" => "Porträt",
+        "Landscape" => "Landschaft",
+        other => other,
+    }
+}
+
 /// `0.25`, `0.5`, `1`, `1.5` …
 pub fn format_speed(f: f64) -> String {
     let s = format!("{f:.2}");
@@ -849,20 +932,28 @@ fn format_panel(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
         ui.add_space(6.0);
     }
     ui.add_space(2.0);
+    let mut refit = None;
     ui.horizontal(|ui| {
         ui.label(RichText::new("Clips").size(12.5).color(t.dim));
         let r = ui.selectable_label(!app.cut.fill, "einpassen");
         app.widgets.insert("vformat.fit".into(), r.rect);
-        if r.clicked() {
-            app.cut.fill = false;
+        if r.clicked() && app.cut.fill {
+            refit = Some(false);
         }
         let r = ui.selectable_label(app.cut.fill, "füllend");
         app.widgets.insert("vformat.fill".into(), r.rect);
-        if r.clicked() {
-            app.cut.fill = true;
+        if r.clicked() && !app.cut.fill {
+            refit = Some(true);
         }
     });
-    note(ui, t, "Einpassen zeigt das ganze Bild, füllend schneidet die Ränder ab. Einzelne Clips: Eigenschaften › Bewegung.");
+    // the clips of this video, now
+    if let Some(fill) = refit {
+        app.cut.fill = fill;
+        if let Some(f) = current {
+            run(app, &ctx, "br.video.format", json!({"format": f.key(), "fit": if fill { "fill" } else { "fit" }}));
+        }
+    }
+    note(ui, t, "Einpassen zeigt das ganze Bild, füllend schneidet die Ränder ab. Einzelne Clips: Eigenschaften › Transform.");
 }
 
 fn export_panel(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
@@ -957,8 +1048,17 @@ fn start_screen(app: &mut BrApp, ctx: &egui::Context) {
         let card = Rect::from_center_size(area.center(), vec2(card_w, 0.0));
         let mut child =
             ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(card.left(), area.top()), vec2(card_w, area.height()))));
-        child.add_space(((area.height() - 470.0) / 2.0).max(16.0));
-        start_card(app, &mut child, &t, card_w);
+        // centred when it fits, scrolling when it does not (a low window, many recent projects)
+        let id = egui::Id::new("br_start_height");
+        let height = ui.ctx().data(|d| d.get_temp::<f32>(id)).unwrap_or(480.0);
+        egui::ScrollArea::vertical().max_height(area.height()).auto_shrink([false, false]).show(&mut child, |ui| {
+            ui.add_space(((area.height() - height) / 2.0).max(16.0));
+            let top = ui.cursor().top();
+            start_card(app, ui, &t, card_w);
+            let h = ui.cursor().top() - top;
+            ui.ctx().data_mut(|d| d.insert_temp(id, h));
+            ui.add_space(16.0);
+        });
     });
 }
 

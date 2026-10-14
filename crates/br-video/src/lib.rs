@@ -240,7 +240,7 @@ pub fn export_path(dir: &std::path::Path, name: &str, preset: &ExportPreset) -> 
 /// media when opened from another folder). Returns the video's state.
 pub fn open_files(s: &mut Session, paths: &[String]) -> Result<Value, String> {
     let abs = |p: &String| std::path::absolute(p).map(|a| a.to_string_lossy().into_owned()).unwrap_or_else(|_| p.clone());
-    let paths: Vec<String> = paths.iter().map(abs).collect();
+    let paths: Vec<String> = expand_folders(&paths.iter().map(abs).collect::<Vec<_>>());
     let kind = |p: &String| file_kind(p).unwrap_or("");
     if let Some(project) = paths.iter().find(|p| kind(p) == "project") {
         run(s, "file.open", json!({"path": project}))?;
@@ -252,6 +252,56 @@ pub fn open_files(s: &mut Session, paths: &[String]) -> Result<Value, String> {
         st = state(s)?;
     }
     Ok(st)
+}
+
+/// The hidden file an export to `path` is written to until it is complete.
+pub fn part_path(path: &std::path::Path) -> std::path::PathBuf {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Video.mp4".into());
+    let (stem, ext) = name.rsplit_once('.').unwrap_or((name.as_str(), "mp4"));
+    path.with_file_name(format!(".{stem}.br-part.{ext}"))
+}
+
+/// An export job's end: `None` while it runs; when it is done the part file becomes `path`
+/// (`Ok`), or is removed (`Err`: failed or cancelled).
+pub fn settle_export(s: &Session, job: u64, part: &std::path::Path, path: &std::path::Path) -> Option<Result<(), String>> {
+    let result = match s.jobs.iter().find(|j| j.id == job) {
+        Some(j) => j.result.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|r| r.as_ref().map(|_| ()).map_err(Clone::clone))?,
+        // FilmCraft let go of the job: the file tells
+        None if part.exists() => Ok(()),
+        None => Err("abgebrochen".into()),
+    };
+    Some(match result {
+        Ok(()) => std::fs::rename(part, path).map_err(|e| format!("{}: {e}", path.display())),
+        Err(e) => {
+            let _ = std::fs::remove_file(part);
+            Err(if e == "cancelled" { "abgebrochen".into() } else { e })
+        }
+    })
+}
+
+/// Expand folders into the media files in them (sorted by name, at most 1000 per folder, not
+/// into hidden folders); files stay as they are.
+pub fn expand_folders(paths: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for p in paths {
+        let path = std::path::Path::new(p);
+        if !path.is_dir() {
+            out.push(p.clone());
+            continue;
+        }
+        let mut found: Vec<String> = std::fs::read_dir(path)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| !e.file_name().to_string_lossy().starts_with('.') && e.path().is_file())
+            .map(|e| e.path().to_string_lossy().into_owned())
+            .filter(|f| matches!(file_kind(f), Some("video" | "audio" | "image" | "caption")))
+            .collect();
+        found.sort();
+        found.truncate(1000);
+        out.extend(found);
+    }
+    out
 }
 
 /// What the media picker offers: video, sound and still images.
@@ -477,10 +527,17 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
                     let imported = s.execute("file.import", json!({"paths": paths}))?;
                     let items = ids(&imported, "items");
                     if items.is_empty() {
-                        return Err(filmcraft_engine::EngineError::BadParams {
-                            cmd: "file.import".into(),
-                            msg: format!("nothing imported: {imported}"),
-                        });
+                        let why: Vec<String> = imported["errors"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(|e| e.as_str().map_or_else(|| e.to_string(), str::to_string))
+                            .collect();
+                        return Err(filmcraft_engine::EngineError::Other(if why.is_empty() {
+                            "keine dieser Dateien ließ sich lesen".into()
+                        } else {
+                            why.join("; ")
+                        }));
                     }
                     // clips of another shape fit into the frame, as in CapCut (FilmCraft's own
                     // default places them at 100 %); the preference is the user's again afterwards
@@ -508,7 +565,7 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
         "br.video.delete" => {
             let chosen = chosen_clips(s, p);
             if chosen.is_empty() {
-                return Err(err(id, "select the clips to delete"));
+                return Err(err(id, "erst die Clips auswählen, die weg sollen"));
             }
             s.edit_group("Löschen", |s| ripple_delete(s, &chosen)).map_err(|e| e.to_string())?;
             state(s)
@@ -520,10 +577,10 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
             }
             let chosen = chosen_clips(s, p);
             if chosen.is_empty() {
-                return Err(err(id, "select the clips to speed up or slow down"));
+                return Err(err(id, "erst die Clips auswählen, deren Tempo sich ändern soll"));
             }
             // a reversed clip stays reversed (FilmCraft's command sets the direction too)
-            let q = s.active_sequence().ok_or_else(|| err(id, "no video yet"))?;
+            let q = s.active_sequence().ok_or_else(|| err(id, "noch kein Video"))?;
             let (backward, forward): (Vec<u64>, Vec<u64>) =
                 chosen.iter().partition(|c| q.find_item(filmcraft_project::ClipId(**c)).is_some_and(|(_, it)| it.reverse));
             s.edit_group(&format!("Tempo {speed}×"), |s| {
@@ -541,13 +598,13 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
             // only ever unlinks (FilmCraft's clip.link toggles, and links unlinked clips)
             let chosen = chosen_clips(s, p);
             if chosen.is_empty() {
-                return Err(err(id, "select the clips whose sound should be separate"));
+                return Err(err(id, "erst die Clips auswählen, deren Ton getrennt werden soll"));
             }
             let linked = s
                 .active_sequence()
                 .is_some_and(|q| q.all_tracks().flat_map(|t| t.items.iter()).any(|it| chosen.contains(&it.id.0) && it.link.is_some()));
             if !linked {
-                return Err(err(id, "picture and sound of these clips are separate already"));
+                return Err(err(id, "Bild und Ton dieser Clips sind schon getrennt"));
             }
             let n = s
                 .edit_sequence("Ton trennen", |q, _, _| {
@@ -588,7 +645,7 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
                 let imported = s.execute("file.import", json!({"paths": [path]}))?;
                 let items = ids(&imported, "items");
                 let Some(item) = items.first() else {
-                    return Err(filmcraft_engine::EngineError::BadParams { cmd: "file.import".into(), msg: format!("nothing imported: {imported}") });
+                    return Err(filmcraft_engine::EngineError::Other(format!("{path} ließ sich nicht lesen")));
                 };
                 // as long as the video (the main track), never longer: music must not add black
                 let end = track_end(main_track(&s.execute("sequence.inspect", json!({}))?));
@@ -600,6 +657,18 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
                 let clips = ids(&placed, "clips");
                 s.execute("essentialSound.setType", json!({"clips": clips, "type": "music"}))?;
                 if duck {
+                    // lowered under any sound of the video, not only under clips typed as dialogue
+                    // (FilmCraft's default; the video's own sound has no type)
+                    let ids: Vec<filmcraft_project::ClipId> = clips.iter().copied().map(filmcraft_project::ClipId).collect();
+                    s.edit_sequence("Musik", |q, _, _| {
+                        for it in q.all_tracks_mut().flat_map(|t| t.items.iter_mut()).filter(|it| ids.contains(&it.id)) {
+                            if let Some(e) = it.essential.as_mut() {
+                                e.ducking.enabled = true;
+                                e.ducking.against_untyped = true;
+                            }
+                        }
+                        Ok(())
+                    })?;
                     s.execute("essentialSound.generateDucking", json!({"clips": clips}))?;
                 }
                 Ok(placed)
@@ -627,7 +696,7 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
                 }
             };
             if clips.is_empty() {
-                return Err(err(id, "no video clips"));
+                return Err(err(id, "keine Videoclips, auf die ein Filter passt"));
             }
             let looks: Vec<_> = filmcraft_render::lumetri_presets::presets().iter().map(|l| l.instance()).collect();
             let label = if remove_only { "Filter entfernen".to_string() } else { format!("Filter {name}") };
@@ -660,7 +729,7 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
                 Some(other) => return Err(err(id, format!("`fit` is fit or fill, not `{other}`"))),
             };
             if s.active_sequence().is_none() {
-                return Err(err(id, "no video yet: br.video.new or br.video.add first"));
+                return Err(err(id, "noch kein Video: erst br.video.new oder br.video.add"));
             }
             let (w, h) = format.size();
             s.edit_group(&format!("Format {}", format.key()), |s| {
@@ -713,7 +782,7 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
                 .filter(|a| !has_one.contains(a))
                 .collect();
             if cuts.is_empty() {
-                return Err(err(id, "no cut between two clips without a transition there"));
+                return Err(err(id, "kein Schnitt zwischen zwei Clips ohne Übergang"));
             }
             let n = cuts.len();
             s.edit_group("Übergänge", |s| {
@@ -753,6 +822,10 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
             };
             // waits for the file unless asked not to (the window runs it in the background)
             let wait = p.get("wait").and_then(Value::as_bool).unwrap_or(true);
+            // written under a hidden name first, the file appears only when it is complete (a
+            // download page or a player never sees half an MP4; a cancelled one leaves nothing)
+            let part = part_path(&path);
+            let _ = std::fs::remove_file(&part);
             // captions on screen go into the picture (an MP4 has no other place for them)
             let burn = p
                 .get("burnCaptions")
@@ -760,17 +833,20 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
                 .unwrap_or_else(|| s.active_sequence().is_some_and(|q| q.caption_tracks.iter().any(|t| t.enabled && !t.captions.is_empty())));
             // the whole video, whatever In and Out marks are set
             let range = p.get("range").cloned().unwrap_or(json!("entire"));
-            let r = run(
-                s,
-                "export.quick",
-                json!({"preset": preset.filmcraft, "path": path.to_string_lossy(), "wait": wait, "burnCaptions": burn, "range": range}),
-            )?;
-            // a waited-for export that failed is a failure (FilmCraft keeps the error in its job)
-            if wait
-                && let Some(job) = r.get("job").and_then(Value::as_u64)
-                && let Some(Err(e)) = s.jobs.iter().find(|j| j.id == job).and_then(|j| j.result.lock().unwrap_or_else(|e| e.into_inner()).clone())
-            {
-                return Err(err(id, e));
+            let Some(part_str) = part.to_str() else {
+                return Err(err(id, format!("{}: der Ordnername ist kein gültiger Text (UTF-8)", path.display())));
+            };
+            let mut r =
+                run(s, "export.quick", json!({"preset": preset.filmcraft, "path": part_str, "wait": wait, "burnCaptions": burn, "range": range}))?;
+            r["path"] = json!(path.to_string_lossy());
+            r["part"] = json!(part_str);
+            if wait {
+                // a waited-for export that failed is a failure (FilmCraft keeps the error in its job)
+                let job = r.get("job").and_then(Value::as_u64).unwrap_or(0);
+                match settle_export(s, job, &part, &path) {
+                    Some(Ok(())) | None => {}
+                    Some(Err(e)) => return Err(err(id, e)),
+                }
             }
             Ok(r)
         }

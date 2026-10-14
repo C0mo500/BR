@@ -311,6 +311,8 @@ impl BrApp {
             Page::Foto => {
                 self.lc.ui(ui);
                 photo::show(self, &ctx);
+                // a message from the video side (an export finished, closing waits for one)
+                cut::draw_toast(self, &ctx);
             }
             _ if !self.fonts_ok => {
                 // the fonts were just completed: FilmCraft draws from the next frame on
