@@ -103,3 +103,88 @@ fn mcp_over_stdio() {
     assert!(l[1]["result"]["tools"].as_array().unwrap().iter().any(|t| t["name"] == "br_export"));
     assert_eq!(l[2]["result"]["isError"], false, "{}", l[2]);
 }
+
+/// A small picture to import: a snapshot of the window. Different names give different pictures
+/// (LightCraft recognises the same picture under another name as a duplicate).
+fn picture(dir: &std::path::Path, name: &str) -> PathBuf {
+    let p = dir.join(name);
+    let width = 400 + 10 * name.len();
+    let o = br().args(["snapshot", "--demo", "--size", &format!("{width}x300"), "-o"]).arg(&p).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    p
+}
+
+#[test]
+fn run_import_works_on_the_photo_it_names_even_when_it_is_already_there() {
+    let dir = temp("import");
+    let lib = dir.join("lib");
+    let (a, b) = (picture(&dir, "a.png"), picture(&dir, "bb.png"));
+    let state = |path: &PathBuf| {
+        let o = br().arg("run").arg(format!("--library={}", lib.display())).arg("--import").arg(path).arg("br.state").output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        lines(&o.stdout)[0]["result"].clone()
+    };
+    let first = state(&a);
+    assert_eq!(first["file"], "a.png");
+    assert_eq!(state(&b)["file"], "bb.png");
+    // a.png again: already in the library, and still the photo the commands work on
+    let again = state(&a);
+    assert_eq!((again["file"].as_str(), again["id"].as_u64()), (Some("a.png"), first["id"].as_u64()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_empty_library_option_is_refused() {
+    let dir = temp("emptylib");
+    let o = br().args(["run", "--library=", "br.looks"]).current_dir(&dir).output().unwrap();
+    assert!(!o.status.success());
+    assert!(std::fs::read_dir(&dir).unwrap().next().is_none(), "nothing written in the current folder");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn bad_snapshot_sizes_and_photo_outputs_are_refused() {
+    for size in ["0x0", "100000x100000"] {
+        let o = br().args(["snapshot", "--demo", "--size", size, "-o", "/tmp/never.png"]).output().unwrap();
+        assert!(!o.status.success(), "{size}");
+    }
+    let dir = temp("pngout");
+    let pic = picture(&dir, "in.png");
+    let out = dir.join("out.png");
+    let o = br().arg("photo").arg(&pic).arg("-o").arg(&out).output().unwrap();
+    assert!(!o.status.success());
+    assert!(!out.exists(), "no folder named out.png");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_numeric_folder_name_stays_a_folder_name() {
+    let dir = temp("numdir");
+    let o = br()
+        .args(["run", "--demo", "br.export", "preset=square", "dir=2024"])
+        .current_dir(&dir)
+        .env("BR_EXPORTS", dir.join("elsewhere"))
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(dir.join("2024").is_dir());
+    assert!(!dir.join("elsewhere").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_closed_pipe_ends_quietly_and_groups_are_listed_once() {
+    let mut child = br().arg("looks").stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut first = String::new();
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(child.stdout.take().unwrap()), &mut first).unwrap();
+    let o = child.wait_with_output().unwrap();
+    assert_ne!(o.status.code(), Some(101), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!String::from_utf8_lossy(&o.stderr).contains("panicked"));
+    let o = br().arg("looks").output().unwrap();
+    let headings: Vec<String> = String::from_utf8_lossy(&o.stdout).lines().filter(|l| !l.starts_with(' ')).map(String::from).collect();
+    let mut unique = headings.clone();
+    unique.dedup();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(headings.len(), unique.len(), "{headings:?}");
+}

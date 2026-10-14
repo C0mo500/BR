@@ -24,3 +24,7 @@ log = { workspace = true }
 
 [lints]
 workspace = true
+
+# file drag-and-drop needs X11 (XWayland) on Linux: winit has none on Wayland
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+winit = { version = "0.30", default-features = false, features = ["x11"] }

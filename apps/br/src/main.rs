@@ -1,10 +1,10 @@
 //! `br`: BR's window and command line.
 
-use std::io::BufReader;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use br_mcp::{BrBackend, BrServer};
+use br_mcp::BrBackend;
 use br_photo::adjust::Slider;
 use br_photo::crop::Format;
 use br_photo::export::{Preset, Target};
@@ -20,10 +20,12 @@ USAGE
   br [--library DIR | --demo] [FILES…]
       Open the window. FILES (photos or folders) are imported. The library is DIR, else
       $BR_LIBRARY, else ~/Pictures/BR Library; --demo opens LightCraft's demo photos in memory.
+      BR_RENDERER=glow or =wgpu picks the window renderer; BR_WAYLAND=1 keeps native Wayland
+      (by default BR uses X11 where it can, which is what makes dropping files work).
 
   br mcp [--library DIR | --demo] [--full] [FILES…]
       MCP server on stdio for AI agents (Claude Code: `claude mcp add br -- br mcp`).
-      Without --library or --demo the photos live in memory (FILES are imported).
+      Without --library or --demo the photos live in memory (FILES are imported and selected).
       --full also lists every LightCraft command as a cmd_* tool (about 330 tools).
       A library open in the BR window cannot be opened here at the same time.
 
@@ -31,11 +33,12 @@ USAGE
            [--warmth N] [--sharpness N] [--vignette N] [--format F] [--preset P]
       Edit one photo and export it as JPEG. Sliders are -100..100. F: original, 1:1, 4:5, 9:16,
       16:9. P: instagram (1080x1350), story (1080x1920), square, wide, full (default).
-      OUT is a .jpg file or a folder (default: $BR_EXPORTS or ~/Pictures/BR Exports).
+      OUT is a .jpg/.jpeg file or a folder (default: $BR_EXPORTS or ~/Pictures/BR Exports).
 
-  br run [--library DIR | --demo] [--import PATH]… CMD [key=value…] [CMD …]
+  br run [--library DIR | --demo] [--import PATH]… [--keep-going] CMD [key=value…] [CMD …]
       Run commands and print one JSON line each: BR's br.* commands (see `br commands`) or any
-      LightCraft command (develop.set, library.select, …). Values are JSON, else text.
+      LightCraft command (develop.set, library.select, …). Values are JSON, else text
+      (dir, path, look, format and preset are always text). Imported photos are selected.
 
   br commands         BR's commands and their parameters
   br looks [--json]   the looks
@@ -61,6 +64,20 @@ impl log::Log for StderrLog {
 
 static LOGGER: StderrLog = StderrLog;
 
+/// Print to stdout. When the reader went away (`br looks | head -2`), stop quietly.
+fn out(text: impl std::fmt::Display) -> Result<(), String> {
+    let mut o = std::io::stdout().lock();
+    match write!(o, "{text}").and_then(|()| o.flush()) {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => std::process::exit(0),
+        r => r.map_err(|e| e.to_string()),
+    }
+}
+
+/// [`out`] with a newline.
+fn outln(text: impl std::fmt::Display) -> Result<(), String> {
+    out(format!("{text}\n"))
+}
+
 fn main() {
     let _ = log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Info));
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -69,27 +86,13 @@ fn main() {
         _ => ("app".to_string(), args),
     };
     let r = match cmd.as_str() {
-        "help" => {
-            print!("{USAGE}");
-            Ok(())
-        }
-        _ if rest.iter().any(|a| a == "--help" || a == "-h") => {
-            print!("{USAGE}");
-            Ok(())
-        }
-        _ if rest.iter().any(|a| a == "--version" || a == "-V") => {
-            println!("br {}", env!("CARGO_PKG_VERSION"));
-            Ok(())
-        }
+        "help" => out(USAGE),
+        _ if rest.iter().any(|a| a == "--help" || a == "-h") => out(USAGE),
+        _ if rest.iter().any(|a| a == "--version" || a == "-V") => outln(format!("br {}", env!("CARGO_PKG_VERSION"))),
         "mcp" => mcp(&rest),
         "photo" => photo(&rest),
         "run" => run(&rest),
-        "commands" => {
-            for (id, label, params) in commands::COMMANDS {
-                println!("{id:<12} {label}\n             {params}");
-            }
-            Ok(())
-        }
+        "commands" => commands::COMMANDS.iter().try_for_each(|(id, label, params)| outln(format!("{id:<12} {label}\n             {params}"))),
         "looks" => looks(&rest),
         "snapshot" => snapshot(&rest),
         _ => window(&rest),
@@ -113,12 +116,21 @@ fn library_opts(args: &[String], opts: &mut Opts) -> Result<Vec<String>, String>
     let mut rest = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        match a.as_str() {
-            "--demo" | "--memory" => opts.demo = true,
-            "--library" => opts.library = Some(PathBuf::from(it.next().ok_or("--library needs a folder")?)),
-            _ if a.starts_with("--library=") => opts.library = Some(PathBuf::from(&a["--library=".len()..])),
-            _ => rest.push(a.clone()),
-        }
+        let dir = match a.as_str() {
+            "--demo" | "--memory" => {
+                opts.demo = true;
+                continue;
+            }
+            "--library" => it.next().map(String::as_str),
+            _ if a.starts_with("--library=") => Some(&a["--library=".len()..]),
+            _ => {
+                rest.push(a.clone());
+                continue;
+            }
+        };
+        // an empty value (an unset variable in a script) must not make a library in the current folder
+        let dir = dir.filter(|d| !d.trim().is_empty()).ok_or("--library needs a folder")?;
+        opts.library = Some(PathBuf::from(dir));
     }
     if opts.demo && opts.library.is_some() {
         return Err("--demo and --library exclude each other".into());
@@ -140,8 +152,29 @@ fn open_session(opts: &Opts, default_library: bool) -> (Session, Option<String>,
     }
 }
 
+/// Import `paths` (files or folders) and select what they are in the library, new or already
+/// there, so the next commands work on them. Returns LightCraft's import report.
+fn import_and_select(s: &mut Session, paths: &[String]) -> Result<Value, String> {
+    let r = s.execute("library.import", &json!({"paths": expand_paths(paths)})).map_err(|e| e.to_string())?;
+    let mut ids: Vec<u64> = Vec::new();
+    for v in r["imported"].as_array().into_iter().chain(r["restored"].as_array()).flatten() {
+        if let Some(id) = v.as_u64().filter(|id| !ids.contains(id)) {
+            ids.push(id);
+        }
+    }
+    for d in r["duplicates"].as_array().into_iter().flatten() {
+        if let Some(id) = d["existing"].as_u64().filter(|id| !ids.contains(id)) {
+            ids.push(id);
+        }
+    }
+    if let Some(first) = ids.first() {
+        s.execute("library.select", &json!({"ids": ids, "active": first})).map_err(|e| e.to_string())?;
+    }
+    Ok(r)
+}
+
 /// Window options for `renderer`. wgpu gets LightCraft's window backends (Vulkan, Metal or DX12,
-/// plus OpenGL), so machines without Vulkan still get a window.
+/// plus OpenGL where LightCraft uses it).
 fn native_options(renderer: eframe::Renderer) -> eframe::NativeOptions {
     let mut o = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -159,16 +192,19 @@ fn native_options(renderer: eframe::Renderer) -> eframe::NativeOptions {
         n.instance_descriptor.backend_options = backend::backend_options();
         n.instance_descriptor.flags = backend::instance_flags_from_env(n.instance_descriptor.flags);
     }
+    // winit has file drag-and-drop on X11 only: use XWayland where there is one (as LightCraft)
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty()) && std::env::var_os("BR_WAYLAND").is_none() {
+        o.event_loop_builder = Some(Box::new(|b| {
+            use winit::platform::x11::EventLoopBuilderExtX11;
+            b.with_x11();
+        }));
+    }
     o
 }
 
-/// The renderers to try, in order: `BR_RENDERER=glow` or `=wgpu` picks one.
-fn renderers() -> Vec<eframe::Renderer> {
-    match std::env::var("BR_RENDERER").ok().as_deref().map(str::to_lowercase).as_deref() {
-        Some("glow" | "gl" | "opengl") => vec![eframe::Renderer::Glow],
-        Some("wgpu") => vec![eframe::Renderer::Wgpu],
-        _ => vec![eframe::Renderer::Wgpu, eframe::Renderer::Glow],
-    }
+fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
+    p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into())
 }
 
 fn window(args: &[String]) -> Result<(), String> {
@@ -179,39 +215,52 @@ fn window(args: &[String]) -> Result<(), String> {
     }
     opts.files = rest;
     let files = expand_paths(&opts.files);
-    let renderers = renderers();
-    let mut last = String::new();
-    for (i, renderer) in renderers.iter().enumerate() {
-        // a fresh session per attempt: a failed start drops the last one (and its library lock)
-        let (session, lib, problem) = open_session(&opts, true);
-        let files = files.clone();
-        let r = eframe::run_native(
+    let forced = std::env::var("BR_RENDERER").ok().map(|r| r.to_lowercase());
+    let renderer = match forced.as_deref() {
+        Some("glow" | "gl" | "opengl") => eframe::Renderer::Glow,
+        Some("wgpu") | None => eframe::Renderer::Wgpu,
+        Some(other) => return Err(format!("BR_RENDERER={other}: use glow or wgpu")),
+    };
+    let (session, lib, problem) = open_session(&opts, true);
+    let started = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        eframe::run_native(
             br_ui::TITLE,
-            native_options(*renderer),
-            Box::new(move |_cc| {
-                let mut app = br_ui::BrApp::new(session, lib);
-                if let Some((dir, e)) = problem {
-                    app.library_problem(dir, e);
-                }
-                if !files.is_empty()
-                    && let Err(e) = lightcraft_ui_egui::import::start_paths(&mut app.lc, files)
-                {
-                    log::error!("import: {e}");
+            native_options(renderer),
+            Box::new(move |cc| {
+                let mut app = br_ui::BrApp::with_services(session, lib, br_ui::desktop::services(&cc.egui_ctx));
+                match problem {
+                    // the photos are imported once the user decides what to do about the library
+                    Some((dir, e)) => app.library_problem(dir, e, files),
+                    None if !files.is_empty() => {
+                        if let Err(e) = lightcraft_ui_egui::import::start_paths(&mut app.lc, files) {
+                            log::error!("import: {e}");
+                        }
+                    }
+                    None => {}
                 }
                 Ok(Box::new(app))
             }),
-        );
-        match r {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                last = e.to_string();
-                if i + 1 < renderers.len() {
-                    log::warn!("the window could not start with {renderer}: {e}; trying the next renderer");
-                }
-            }
-        }
+        )
+    }));
+    let failure = match started {
+        Ok(Ok(())) => return Ok(()),
+        // no display, or a broken X11/Wayland setup: another renderer cannot help
+        Ok(Err(e @ (eframe::Error::WinitEventLoop(_) | eframe::Error::Winit(_)))) => return Err(format!("could not open the window: {e}")),
+        Ok(Err(e)) => e.to_string(),
+        Err(p) => format!("the renderer crashed: {}", panic_text(&*p)),
+    };
+    if forced.is_some() || renderer != eframe::Renderer::Wgpu {
+        return Err(format!("could not open the window: {failure} (try BR_RENDERER=glow or BR_RENDERER=wgpu)"));
     }
-    Err(format!("could not open the window: {last} (try BR_RENDERER=glow or BR_RENDERER=wgpu)"))
+    // a failed or crashed wgpu start can leave the event loop unusable: start again with OpenGL
+    log::warn!("the window could not start with wgpu ({failure}); starting again with OpenGL");
+    let exe = std::env::current_exe().map_err(|e| format!("could not open the window: {failure}; and not restart: {e}"))?;
+    let status = std::process::Command::new(exe)
+        .args(std::env::args_os().skip(1))
+        .env("BR_RENDERER", "glow")
+        .status()
+        .map_err(|e| format!("could not open the window: {failure}; and not restart: {e}"))?;
+    std::process::exit(status.code().unwrap_or(1));
 }
 
 fn mcp(args: &[String]) -> Result<(), String> {
@@ -237,32 +286,48 @@ fn mcp(args: &[String]) -> Result<(), String> {
     };
     let mut backend = BrBackend::new(Headless::new(session), origin);
     if !files.is_empty() {
-        let r = backend.inner.session.execute("library.import", &json!({"paths": expand_paths(&files)})).map_err(|e| e.to_string())?;
-        log::info!("imported {} photo(s)", r["imported"].as_array().map_or(0, Vec::len));
+        let r = import_and_select(&mut backend.inner.session, &files)?;
+        log::info!(
+            "imported {} photo(s), {} already in the library",
+            r["imported"].as_array().map_or(0, Vec::len),
+            r["duplicates"].as_array().map_or(0, Vec::len)
+        );
     }
-    let mut server = BrServer::new(backend, full);
-    server.serve(BufReader::new(std::io::stdin()), std::io::stdout()).map_err(|e| e.to_string())
+    br_mcp::serve(backend, full, std::io::stdin().lock(), std::io::stdout()).map_err(|e| e.to_string())
 }
 
 fn looks(args: &[String]) -> Result<(), String> {
     let s = Session::new();
     if args.iter().any(|a| a == "--json") {
-        println!("{}", br_photo::looks::list_json(&s));
-    } else {
-        let mut group = String::new();
-        for l in br_photo::looks::list(&s) {
-            if l.group != group {
-                println!("{}", l.group);
-                group = l.group.clone();
-            }
-            println!("  {:<24} {}", l.id, l.name);
+        return outln(br_photo::looks::list_json(&s));
+    }
+    let mut group = String::new();
+    for l in br_photo::looks::list(&s) {
+        if l.group != group {
+            outln(&l.group)?;
+            group = l.group.clone();
         }
+        outln(format!("  {:<24} {}", l.id, l.name))?;
     }
     Ok(())
 }
 
 fn number(v: Option<&String>, flag: &str) -> Result<f64, String> {
     v.ok_or(format!("{flag} needs a value"))?.parse::<f64>().map_err(|_| format!("{flag} needs a number"))
+}
+
+/// Where `br photo -o OUT` writes: a .jpg/.jpeg file, or a folder (one that exists, or a name
+/// without an extension). Anything else is refused rather than made into a folder.
+fn photo_target(out: Option<PathBuf>) -> Result<Target, String> {
+    let Some(p) = out else { return Ok(Target::Dir(br_photo::export::default_dir())) };
+    if p.is_dir() {
+        return Ok(Target::Dir(p));
+    }
+    match p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("jpg" | "jpeg") => Ok(Target::File(p)),
+        None => Ok(Target::Dir(p)),
+        Some(e) => Err(format!("br photo writes JPEG: `{}` must end in .jpg/.jpeg or be a folder (not .{e})", p.display())),
+    }
 }
 
 fn photo(args: &[String]) -> Result<(), String> {
@@ -280,9 +345,9 @@ fn photo(args: &[String]) -> Result<(), String> {
             "--auto" => auto = true,
             "--look" => {
                 let v = it.next().ok_or("--look needs a look (see br looks)")?;
-                look = Some(match v.rsplit_once(':') {
-                    Some((l, amount)) if amount.parse::<f64>().is_ok() => (l.to_string(), amount.parse().unwrap_or(100.0)),
-                    _ => (v.clone(), 100.0),
+                look = Some(match v.rsplit_once(':').and_then(|(l, a)| Some((l, a.parse::<f64>().ok()?))) {
+                    Some((l, amount)) => (l.to_string(), amount),
+                    None => (v.clone(), 100.0),
                 });
             }
             "--format" => {
@@ -310,12 +375,12 @@ fn photo(args: &[String]) -> Result<(), String> {
     if !Path::new(&input).is_file() {
         return Err(format!("no such file: {input}"));
     }
+    let target = photo_target(out)?;
     let mut s = library::new_session();
-    let r = s.execute("library.import", &json!({"paths": expand_paths(std::slice::from_ref(&input))})).map_err(|e| e.to_string())?;
-    let id =
-        r["imported"].get(0).and_then(Value::as_u64).map(lightcraft_engine::catalog::PhotoId).ok_or_else(|| {
-            format!("could not open {input}: {}", r["failed"].get(0).map(|f| f[1].to_string()).unwrap_or_else(|| "not a photo".into()))
-        })?;
+    let r = import_and_select(&mut s, std::slice::from_ref(&input))?;
+    let id = s
+        .active()
+        .ok_or_else(|| format!("could not open {input}: {}", r["failed"].get(0).map(|f| f[1].to_string()).unwrap_or_else(|| "not a photo".into())))?;
     let mut st = br_photo::BrState::default();
     if auto {
         br_photo::adjust::auto(&mut s, id).map_err(|e| e.to_string())?;
@@ -329,14 +394,9 @@ fn photo(args: &[String]) -> Result<(), String> {
     if let Some(f) = format {
         br_photo::crop::apply(&mut s, id, f).map_err(|e| e.to_string())?;
     }
-    let target = match out {
-        Some(p) if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg")) => Target::File(p),
-        Some(p) => Target::Dir(p),
-        None => Target::Dir(br_photo::export::default_dir()),
-    };
     let files = br_photo::export::export(&mut s, id, preset, &target)?;
     for f in &files {
-        println!("{}", json!({"path": f["path"], "width": f["width"], "height": f["height"], "preset": preset.key()}));
+        outln(json!({"path": f["path"], "width": f["width"], "height": f["height"], "preset": preset.key()}))?;
     }
     Ok(())
 }
@@ -346,6 +406,9 @@ struct Step {
     id: String,
     params: Value,
 }
+
+/// Params that are always text, so `dir=2024` is the folder "2024", not a number.
+const TEXT_PARAMS: &[&str] = &["dir", "path", "look", "format", "preset"];
 
 fn parse_steps(tokens: &[String]) -> Result<Vec<Step>, String> {
     let mut steps: Vec<Step> = Vec::new();
@@ -359,7 +422,8 @@ fn parse_steps(tokens: &[String]) -> Result<Vec<Step>, String> {
             }
         } else if let Some((k, v)) = t.split_once('=') {
             let step = steps.last_mut().ok_or_else(|| format!("param `{t}` before any command"))?;
-            step.params[k.trim()] = serde_json::from_str(v).unwrap_or_else(|_| json!(v));
+            let k = k.trim();
+            step.params[k] = if TEXT_PARAMS.contains(&k) { json!(v) } else { serde_json::from_str(v).unwrap_or_else(|_| json!(v)) };
         } else {
             steps.push(Step { id: t.clone(), params: json!({}) });
         }
@@ -392,7 +456,7 @@ fn run(args: &[String]) -> Result<(), String> {
     }
     let mut b = BrBackend::new(Headless::new(session), "br run");
     if !imports.is_empty() {
-        b.inner.session.execute("library.import", &json!({"paths": expand_paths(&imports)})).map_err(|e| e.to_string())?;
+        import_and_select(&mut b.inner.session, &imports)?;
     }
     let mut failed = false;
     for step in steps {
@@ -400,10 +464,10 @@ fn run(args: &[String]) -> Result<(), String> {
         let r = b.call("engine.execute", json!({"command": step.id, "params": step.params}));
         let ms = t.elapsed().as_millis();
         match r {
-            Ok(v) => println!("{}", json!({"command": step.id, "ok": true, "result": v, "ms": ms})),
+            Ok(v) => outln(json!({"command": step.id, "ok": true, "result": v, "ms": ms}))?,
             Err(e) => {
                 failed = true;
-                println!("{}", json!({"command": step.id, "ok": false, "error": e, "ms": ms}));
+                outln(json!({"command": step.id, "ok": false, "error": e, "ms": ms}))?;
                 if !keep_going {
                     break;
                 }
@@ -440,18 +504,19 @@ fn snapshot(args: &[String]) -> Result<(), String> {
             _ => opts.files.push(a.clone()),
         }
     }
+    lightcraft_ui_egui::headless::viewport_pixels(size, scale).map_err(|e| format!("--size/--scale: {e}"))?;
     if opts.library.is_none() && opts.files.is_empty() {
         opts.demo = true;
     }
     lightcraft_engine::gpu::set_enabled(false);
     let (session, lib, problem) = open_session(&opts, false);
-    let mut app = br_ui::BrApp::new(session, lib);
-    app.lc.ui.settings.gpu = false;
     if let Some((dir, e)) = problem {
         return Err(format!("{e} ({dir})"));
     }
+    let mut app = br_ui::BrApp::new(session, lib);
+    app.lc.ui.settings.gpu = false;
     if !opts.files.is_empty() {
-        app.lc.session.execute("library.import", &json!({"paths": expand_paths(&opts.files)})).map_err(|e| e.to_string())?;
+        import_and_select(&mut app.lc.session, &opts.files)?;
     }
     if let Some(tab) = tab {
         app.simple.tab = tab;
@@ -464,7 +529,6 @@ fn snapshot(args: &[String]) -> Result<(), String> {
     }
     let png = br_ui::headless::png(&d.paint());
     std::fs::write(&out, png).map_err(|e| format!("{}: {e}", out.display()))?;
-    println!("{}", out.display());
     app.on_exit();
-    Ok(())
+    outln(out.display())
 }

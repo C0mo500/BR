@@ -13,6 +13,7 @@
 //! back. Everything that only LightCraft's `ui()` would do (export polling, notices, the quit
 //! prompt) is done by BR in Simple mode.
 
+pub mod desktop;
 pub mod headless;
 pub mod simple;
 mod style;
@@ -55,7 +56,9 @@ pub struct BrApp {
     pub library: Option<String>,
 }
 
-fn services() -> Services {
+/// The services every BR window has: writing files and PNG screenshots. A desktop window adds
+/// file dialogs and links ([`desktop::services`]); headless runs keep these alone.
+pub(crate) fn base_services() -> Services {
     Services {
         write: Some(Box::new(lightcraft_engine::export::write_file)),
         write_shared: Some(std::sync::Arc::new(lightcraft_engine::export::write_file)),
@@ -71,18 +74,27 @@ fn is_shortcut_event(e: &egui::Event) -> bool {
 }
 
 impl BrApp {
-    /// BR on `session`. `library` names where it lives (`None` for an in-memory session).
+    /// BR on `session`, without file dialogs (headless runs and tests). `library` names where it
+    /// lives (`None` for an in-memory session).
     pub fn new(session: Session, library: Option<String>) -> Self {
-        let mut lc = LightcraftApp::new(session, services());
+        Self::with_services(session, library, base_services())
+    }
+
+    /// BR on `session` with `services` (a window: [`desktop::services`]).
+    pub fn with_services(session: Session, library: Option<String>, services: Services) -> Self {
+        let mut lc = LightcraftApp::new(session, services);
         lc.ui.language = lightcraft_ui_egui::i18n::Locale::De;
         // BR shows its own title; this keeps LightCraft from replacing it with "LightCraft — …"
         lc.shown_library = Some(lc.session.library_generation());
         Self { lc, mode: Mode::Simple, simple: SimpleState::default(), widgets: HashMap::new(), library }
     }
 
-    /// Show a library that could not be opened (the session is then in memory).
-    pub fn library_problem(&mut self, path: impl Into<String>, error: impl Into<String>) {
-        self.lc.library_problem = Some(lightcraft_ui_egui::panels::library_problem::LibraryProblem::new(path, error));
+    /// Show a library that could not be opened (the session is then in memory). `pending_import`
+    /// is imported once the user picks Try Again or Continue Without Saving.
+    pub fn library_problem(&mut self, path: impl Into<String>, error: impl Into<String>, pending_import: Vec<String>) {
+        let mut p = lightcraft_ui_egui::panels::library_problem::LibraryProblem::new(path, error);
+        p.pending_import = pending_import;
+        self.lc.library_problem = Some(p);
     }
 
     /// Switch to Pro mode on the active photo: LightCraft's detail view with its Edit panel.
@@ -102,8 +114,8 @@ impl BrApp {
 
     /// Back to Simple mode.
     pub fn open_simple(&mut self) {
-        if self.lc.session.interaction.is_some() {
-            let _ = self.lc.session.end_interaction();
+        if let Err(e) = br_photo::adjust::end(&mut self.lc.session) {
+            log::warn!("ending an edit: {e}");
         }
         self.mode = Mode::Simple;
     }
@@ -123,6 +135,8 @@ impl BrApp {
             self.lc.logic(ctx);
         }
         self.lc.shown_library = Some(self.lc.session.library_generation());
+        // Pro mode can open another library (Try Again, Open Library…)
+        self.library = self.lc.session.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.to_string_lossy().into_owned());
     }
 
     /// Before each frame: input LightCraft's control channel injects.
@@ -133,6 +147,8 @@ impl BrApp {
     /// Draw the window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         self.widgets.clear();
+        // a Simple-mode export finishes whichever mode is showing
+        simple::poll_export(self, ui.ctx());
         match self.mode {
             Mode::Pro => {
                 let t = style::Theme::get(ui.ctx());
@@ -169,6 +185,8 @@ impl BrApp {
         // LightCraft's dialogs (a dropped preset file, a confirmation) over BR's interface
         panels::dialogs::show(&mut self.lc, ctx);
         panels::toast(&mut self.lc, ctx);
+        // LightCraft's own controls drawn in Simple mode (dialogs, the banner), for automation
+        self.lc.widgets = lightcraft_ui_egui::widgets::take_registry(ctx);
         if std::mem::take(&mut self.lc.ui.quit) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -184,6 +202,8 @@ impl BrApp {
     /// closes.
     pub fn on_exit(&mut self) {
         simple::finish_drags(self);
+        // an export the user did not stop (Quit Anyway cancels it) still gets written
+        simple::wait_for_export(self, Duration::from_secs(120));
         if let Err(e) = self.lc.session.close_library() {
             log::error!("closing the library: {e}");
         }
@@ -211,5 +231,9 @@ impl eframe::App for BrApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         BrApp::on_exit(self);
+        // macOS (as LightCraft, its issue #1331): end the process before eframe tears the window
+        // down, or AppKit's teardown ends in a crash report. Everything is saved at this point.
+        #[cfg(target_os = "macos")]
+        std::process::exit(0);
     }
 }

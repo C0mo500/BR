@@ -187,3 +187,92 @@ fn pro_mode_is_lightcraft_on_the_same_photo_and_back() {
     assert_eq!(app.mode, Mode::Simple);
     assert_eq!(br_photo::adjust::values(&app.lc.session, id)[0].1, 50.0);
 }
+
+#[test]
+fn a_second_look_replaces_the_first() {
+    let (mut app, mut d) = app();
+    let id = app.lc.session.active().unwrap();
+    let before = app.lc.session.develop_of(id).unwrap();
+    let undo0 = app.lc.session.undo.len();
+    d.click(&mut app, "look.lc.warm-glow").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    d.click(&mut app, "look.lc.cool-morning").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    let s = &app.lc.session;
+    let cool = looks::find(s, "lc.cool-morning").unwrap().clone();
+    assert_eq!(*s.develop_of(id).unwrap(), looks::blend_look_for(&s.source_info(id), &before, &cool, 1.0), "exactly the tile");
+    assert_eq!(s.undo.len(), undo0 + 1);
+    d.click(&mut app, "look.original").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(app.lc.session.develop_of(id).unwrap(), before);
+}
+
+#[test]
+fn a_quick_release_is_still_one_undo_step() {
+    let (mut app, mut d) = app();
+    let id = app.lc.session.active().unwrap();
+    let before = app.lc.session.develop_of(id).unwrap();
+    d.click(&mut app, "tab.adjust").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    let undo0 = app.lc.session.undo.len();
+    let r = app.widgets["slider.contrast"];
+    let (from, mid, to) = (r.center(), egui::pos2(r.left() + r.width() * 0.65, r.center().y), egui::pos2(r.left() + r.width() * 0.8, r.center().y));
+    let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    d.step(&mut app, vec![egui::Event::PointerMoved(from)]);
+    d.step(&mut app, vec![button(from, true)]);
+    d.step(&mut app, vec![egui::Event::PointerMoved(mid)]);
+    // the last move and the release in the same frame
+    d.step(&mut app, vec![egui::Event::PointerMoved(to), button(to, false)]);
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(app.lc.session.undo.len(), undo0 + 1, "{:?}", app.lc.session.undo.iter().map(|u| &u.label).collect::<Vec<_>>());
+    d.key(&mut app, egui::Key::Z, egui::Modifiers::COMMAND);
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(app.lc.session.develop_of(id).unwrap(), before);
+}
+
+#[test]
+fn simple_mode_says_when_nothing_is_saved() {
+    let (mut app, mut d) = app();
+    app.library_problem("/nowhere/BR Library", "This library is already open in br.", Vec::new());
+    app.lc.library_problem.as_mut().unwrap().dismissed = true; // Continue Without Saving
+    assert!(d.settle(&mut app, SETTLE));
+    assert!(d.texts().iter().any(|t| t.contains("Vorübergehende Sitzung") || t.contains("Temporary session")), "{:?}", d.texts());
+}
+
+#[test]
+fn an_export_is_a_task_and_finishes_in_pro_mode_too() {
+    let (mut app, mut d) = app();
+    let dir = std::env::temp_dir().join(format!("br-ui-export-pro-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    app.simple.export_dir = dir.clone();
+    app.simple.tab = Tab::Export;
+    assert!(d.settle(&mut app, SETTLE));
+    d.click(&mut app, "export.go").unwrap();
+    assert!(app.simple.exporting());
+    assert!(!app.lc.session.activity.running_cancellable().is_empty(), "the quit prompt knows about it");
+    app.open_pro();
+    assert!(d.settle(&mut app, Duration::from_secs(180)), "settles: the export is collected in Pro mode");
+    assert!(!app.simple.exporting());
+    assert!(app.simple.last_export.is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn looks_made_in_pro_mode_show_up() {
+    let (mut app, mut d) = app();
+    app.lc.run("preset.create", serde_json::json!({"name": "Mein Look"})).unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    let id = app.lc.session.presets.iter().find(|p| p.name == "Mein Look").unwrap().id.clone();
+    assert!(app.widgets.contains_key(&format!("look.{id}")), "new look listed");
+}
+
+#[test]
+fn a_pro_filter_that_hides_everything_can_be_cleared() {
+    let (mut app, mut d) = app();
+    app.lc.run("library.filter", serde_json::json!({"text": "zzzzzz"})).unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    assert!(d.texts().iter().any(|t| t.contains("Keine Fotos in dieser Ansicht")), "{:?}", d.texts());
+    d.click(&mut app, "show.all").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    assert!(app.lc.session.active().is_some());
+}

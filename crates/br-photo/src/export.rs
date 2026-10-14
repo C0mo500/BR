@@ -11,6 +11,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use lightcraft_engine::Session;
 use lightcraft_engine::catalog::{Op, PhotoId};
@@ -155,9 +156,14 @@ impl Plan {
     /// Render, encode and write the file. Returns LightCraft's result per file:
     /// `{path, width, height, bytes, …}`.
     pub fn run(self) -> Result<Vec<Value>, String> {
+        self.run_with_cancel(&AtomicBool::new(false))
+    }
+
+    /// [`Plan::run`], stopping before the next photo once `cancel` is set.
+    pub fn run_with_cancel(self, cancel: &AtomicBool) -> Result<Vec<Value>, String> {
         let mut write = |path: &str, bytes: &[u8]| write_file(path, bytes);
         let exists = |path: &str| Path::new(path).exists();
-        run_batch(self.items, &self.opts, &self.dest, &mut write, &exists, true, &mut |_, _| true)
+        run_batch(self.items, &self.opts, &self.dest, &mut write, &exists, true, &mut |_, _| !cancel.load(Ordering::Relaxed))
     }
 }
 

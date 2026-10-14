@@ -93,3 +93,68 @@ fn mistakes_are_reported_clearly() {
     assert!(r["error"]["message"].as_str().unwrap().contains("unknown tool"));
     ok(&mut s, "br_state", json!({}));
 }
+
+#[test]
+fn requests_lightcraft_would_refuse_are_refused_for_br_tools_too() {
+    let mut s = server(false);
+    let before = ok(&mut s, "br_state", json!({}));
+    // an id that is not a string or number: nothing runs
+    let r = s.handle(json!({"jsonrpc": "2.0", "id": null, "method": "tools/call", "params": {"name": "br_adjust", "arguments": {"light": 40}}}));
+    assert_eq!(r.unwrap()["error"]["code"], -32600);
+    assert_eq!(ok(&mut s, "br_state", json!({}))["sliders"], before["sliders"]);
+    // a photo id that is not a whole number
+    let r = call(&mut s, "br_adjust", json!({"id": "14", "light": 40}));
+    assert_eq!(r["error"]["code"], -32602, "{r}");
+    // newer protocol revisions get LightCraft's result fields on br_* results too
+    let r = s
+        .handle(json!({"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+            "params": {"name": "br_state", "arguments": {}, "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}}))
+        .unwrap();
+    assert_eq!(r["result"]["resultType"], "complete", "{r}");
+}
+
+/// `Write` into a shared buffer, to read what `serve` wrote.
+#[derive(Clone, Default)]
+struct Sink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Sink {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn serve_keeps_lightcrafts_progress_notifications() {
+    lightcraft_engine::gpu::set_enabled(false);
+    let dir = std::env::temp_dir().join(format!("br-mcp-progress-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let input = [
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}}),
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "br_look", "arguments": {"look": "lc.moody"}}}),
+        json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "export",
+            "arguments": {"ids": [1, 2, 3], "dir": dir.to_string_lossy(), "longEdge": 64, "format": "png"}, "_meta": {"progressToken": "tok"}}}),
+        json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "br_adjust", "arguments": {"nope": 1}}}),
+    ]
+    .iter()
+    .map(|m| m.to_string() + "\n")
+    .collect::<String>();
+    let sink = Sink::default();
+    br_mcp::serve(BrBackend::new(Headless::demo(), "demo photos"), false, std::io::Cursor::new(input), sink.clone()).unwrap();
+    let out = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+    let lines: Vec<Value> = out.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let by_id = |id: i64| lines.iter().find(|l| l["id"] == id).unwrap_or_else(|| panic!("no reply {id} in {out}"));
+    assert_eq!(by_id(1)["result"]["serverInfo"]["name"], "br");
+    assert_eq!(by_id(2)["result"]["tools"][0]["name"], "br_state");
+    assert_eq!(by_id(3)["result"]["isError"], false, "{}", by_id(3));
+    assert_eq!(by_id(4)["result"]["isError"], false, "{}", by_id(4));
+    assert_eq!(by_id(5)["error"]["code"], -32602);
+    let progress = lines.iter().filter(|l| l["method"] == "notifications/progress" && l["params"]["progressToken"] == "tok").count();
+    assert!(progress >= 1, "progress notifications: {out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

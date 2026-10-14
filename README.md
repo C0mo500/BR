@@ -79,8 +79,10 @@ cargo run --release -p br -- --demo
 cargo test --workspace               # läuft ohne Bildschirm und ohne GPU
 ```
 
-Das Fenster nutzt wgpu (Vulkan/Metal/DX12/OpenGL) und fällt sonst auf OpenGL (glow) zurück. Mit
-`BR_RENDERER=glow` oder `BR_RENDERER=wgpu` lässt sich der Renderer erzwingen.
+Das Fenster nutzt wgpu (Vulkan, Metal oder DX12). Startet das nicht, startet BR von selbst neu, dann mit
+OpenGL (glow). Mit `BR_RENDERER=glow` oder `BR_RENDERER=wgpu` lässt sich der Renderer erzwingen. Unter
+Linux nutzt BR X11 (XWayland), weil winit nur dort Dateien per Drag-and-drop annimmt; `BR_WAYLAND=1`
+bleibt bei nativem Wayland.
 
 ## Nächste Schritte
 

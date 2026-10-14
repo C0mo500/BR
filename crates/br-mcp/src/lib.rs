@@ -6,21 +6,25 @@
 //! - [`BrBackend`]: LightCraft's in-process [`Headless`] backend with the `br.*` commands of
 //!   [`br_photo::commands`] routed in, so they also work through `command_run` and, with `--full`,
 //!   as `cmd_br_*` tools.
-//! - [`BrServer`]: a front for LightCraft's [`Server`] that names itself `br`, puts BR's
-//!   instructions first and lists typed `br_*` tools (proper schemas, a preview image) ahead of
-//!   LightCraft's own. Everything else is answered by LightCraft's server unchanged.
+//! - A front ([`serve`], [`BrServer`]) for LightCraft's [`Server`]: it names the server `br`, puts
+//!   BR's instructions first and lists typed `br_*` tools (proper schemas, a preview image) ahead
+//!   of LightCraft's own. A `br_*` call is checked against its schema and handed to LightCraft's
+//!   server as the matching `command_run` (or `render_preview`) call, so everything, BR's tools
+//!   included, runs through LightCraft's own request handling: id checks, protocol versions,
+//!   progress notifications, cancellation and `ping` during long exports.
 //!
 //! The protocol is newline-delimited JSON-RPC 2.0 over stdio.
 
-use std::io::{BufRead, Write};
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
+use std::sync::{Arc, Mutex};
 
 use br_photo::BrState;
 use br_photo::adjust::Slider;
 use br_photo::commands;
 use br_photo::crop::Format;
 use br_photo::export::Preset;
-use lightcraft_mcp::{Backend, Headless, ProgressHook, Server, ToolResult, call_tool};
+use lightcraft_mcp::{Backend, Headless, ProgressHook, Server};
 use serde_json::{Map, Value, json};
 
 /// Prefix of BR's own tools.
@@ -85,12 +89,16 @@ fn id_prop() -> Value {
 }
 
 fn tool(name: &str, title: &str, description: &str, properties: Value, required: &[&str], read_only: bool) -> Value {
+    // edits replace what the photo had (undoable, but a client asking before "destructive" calls
+    // should ask); an export only writes a new file
+    let destructive = !read_only && name != "br_export";
+    let idempotent = read_only || matches!(name, "br_adjust" | "br_crop" | "br_reset");
     json!({
         "name": name,
         "title": title,
         "description": description,
         "inputSchema": {"type": "object", "properties": properties, "required": required, "additionalProperties": false},
-        "annotations": {"title": title, "readOnlyHint": read_only, "destructiveHint": false, "idempotentHint": read_only, "openWorldHint": false},
+        "annotations": {"title": title, "readOnlyHint": read_only, "destructiveHint": destructive, "idempotentHint": idempotent, "openWorldHint": false},
     })
 }
 
@@ -120,8 +128,8 @@ pub fn tools() -> Vec<Value> {
         tool(
             "br_look",
             "Apply look",
-            "Apply a look (a filter preset) to a photo. Calling it again for the same look changes its amount instead of stacking it \
-             (still one undo step). Amount 0 takes the look off.",
+            "Apply a look (a filter preset) to a photo. If the photo's latest edit is a look, it is replaced (the same look at a new \
+             amount, or another look), so looks never stack and stay one undo step. Amount 0 takes the look off.",
             json!({
                 "look": {"type": "string", "description": "Look id or name from br_looks, e.g. lc.golden-hour or \"Golden Hour\""},
                 "amount": {"type": "number", "minimum": 0, "maximum": 200, "description": "Strength in percent (default 100, or the look's current amount)"},
@@ -196,15 +204,150 @@ fn command_of(tool: &str) -> Option<&'static str> {
     commands::COMMANDS.iter().map(|(id, _, _)| *id).find(|id| id.strip_prefix("br.") == Some(name))
 }
 
-fn rpc_result(id: Value, result: Value) -> Value {
-    json!({"jsonrpc": "2.0", "id": id, "result": result})
-}
-
 fn rpc_error(id: Value, code: i64, message: impl Into<String>) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message.into()}})
 }
 
-/// LightCraft's MCP server with BR in front.
+/// Check `args` against a tool's input schema: known names, required ones, types, enums, ranges.
+fn check_args(def: &Value, args: &Value) -> Result<(), String> {
+    let name = def["name"].as_str().unwrap_or_default();
+    let Some(given) = args.as_object() else { return Err("arguments must be an object".into()) };
+    let props = def["inputSchema"]["properties"].as_object().cloned().unwrap_or_default();
+    for (k, v) in given {
+        let Some(schema) = props.get(k) else {
+            let known: Vec<&String> = props.keys().collect();
+            return Err(format!("unknown argument `{k}` for {name} (known: {known:?})"));
+        };
+        let ok = match schema["type"].as_str() {
+            Some("integer") => v.is_u64() || v.is_i64(),
+            Some("number") => v.as_f64().is_some_and(f64::is_finite),
+            Some("string") => v.is_string(),
+            _ => true,
+        };
+        if !ok {
+            let want = match schema["type"].as_str() {
+                Some("integer") => "a whole number",
+                Some("number") => "a number",
+                _ => "text",
+            };
+            return Err(format!("{name}: `{k}` must be {want} (got {v})"));
+        }
+        if let Some(options) = schema["enum"].as_array()
+            && !options.contains(v)
+        {
+            return Err(format!("{name}: `{k}` must be one of {}", Value::Array(options.clone())));
+        }
+        if let Some(x) = v.as_f64()
+            && (schema["minimum"].as_f64().is_some_and(|m| x < m) || schema["maximum"].as_f64().is_some_and(|m| x > m))
+        {
+            return Err(format!("{name}: `{k}` must be from {} to {}", schema["minimum"], schema["maximum"]));
+        }
+    }
+    for r in def["inputSchema"]["required"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        if !given.contains_key(r) {
+            return Err(format!("{name} needs `{r}`"));
+        }
+    }
+    Ok(())
+}
+
+/// What the front does with one message.
+enum Front {
+    /// Answer it here (a bad `br_*` call), without LightCraft.
+    Reply(Value),
+    /// Hand it (possibly rewritten) to LightCraft's server; patch the reply to `id` if asked.
+    Forward(Value, Option<(String, Patch)>),
+}
+
+/// A change to one of LightCraft's replies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Patch {
+    Initialize,
+    ToolsList,
+}
+
+fn valid_id(id: Option<&Value>) -> Option<&Value> {
+    id.filter(|i| i.is_string() || i.is_number())
+}
+
+fn front(tools: &[Value], msg: Value) -> Front {
+    let method = msg.get("method").and_then(Value::as_str).unwrap_or_default();
+    let Some(id) = valid_id(msg.get("id")).cloned() else { return Front::Forward(msg, None) };
+    match method {
+        "initialize" => Front::Forward(msg, Some((id.to_string(), Patch::Initialize))),
+        "tools/list" => Front::Forward(msg, Some((id.to_string(), Patch::ToolsList))),
+        "tools/call" => {
+            let name = msg["params"]["name"].as_str().unwrap_or_default().to_string();
+            if !name.starts_with(TOOL_PREFIX) || !msg["params"].is_object() {
+                return Front::Forward(msg, None);
+            }
+            let Some(def) = tools.iter().find(|t| t["name"] == name.as_str()) else {
+                return Front::Reply(rpc_error(id, -32602, format!("unknown tool `{name}`")));
+            };
+            let args = match msg["params"].get("arguments") {
+                None | Some(Value::Null) => json!({}),
+                Some(a) => a.clone(),
+            };
+            if let Err(e) = check_args(def, &args) {
+                return Front::Reply(rpc_error(id, -32602, e));
+            }
+            let (call, call_args) = if name == "br_preview" {
+                let mut a = Map::new();
+                if let Some(v) = args.get("id") {
+                    a.insert("id".into(), v.clone());
+                }
+                a.insert("max_side".into(), args.get("max_side").cloned().unwrap_or(json!(1024)));
+                a.insert("format".into(), args.get("format").cloned().unwrap_or(json!("jpeg")));
+                ("render_preview", Value::Object(a))
+            } else {
+                let Some(command) = command_of(&name) else { return Front::Reply(rpc_error(id, -32602, format!("unknown tool `{name}`"))) };
+                ("command_run", json!({"id": command, "params": args}))
+            };
+            let mut msg = msg;
+            msg["params"]["name"] = json!(call);
+            msg["params"]["arguments"] = call_args;
+            Front::Forward(msg, None)
+        }
+        _ => Front::Forward(msg, None),
+    }
+}
+
+/// Apply `patch` to LightCraft's reply `r`.
+fn patch(tools: &[Value], patch: Patch, r: &mut Value) {
+    let Some(res) = r.get_mut("result").and_then(Value::as_object_mut) else { return };
+    match patch {
+        Patch::ToolsList => {
+            if let Some(list) = res.get_mut("tools").and_then(Value::as_array_mut) {
+                let lc = std::mem::take(list);
+                list.extend(tools.iter().cloned());
+                list.extend(lc);
+            }
+        }
+        Patch::Initialize => {
+            let lc = res.get("instructions").and_then(Value::as_str).unwrap_or_default().to_string();
+            res.insert("serverInfo".into(), json!({"name": "br", "title": "BR", "version": env!("CARGO_PKG_VERSION")}));
+            res.insert("instructions".into(), json!(format!("{INSTRUCTIONS}\n\nLightCraft: {lc}")));
+        }
+    }
+}
+
+/// Patch every reply in `v` (one reply or a batch) whose id has a pending patch.
+fn patch_reply(tools: &[Value], pending: &Mutex<HashMap<String, Patch>>, v: &mut Value) {
+    let one = |r: &mut Value| {
+        let Some(id) = valid_id(r.get("id")).map(Value::to_string) else { return };
+        let p = pending.lock().ok().and_then(|mut m| m.remove(&id));
+        if let Some(p) = p {
+            patch(tools, p, r);
+        }
+    };
+    match v {
+        Value::Array(a) => a.iter_mut().for_each(one),
+        r => one(r),
+    }
+}
+
+/// LightCraft's MCP server with BR in front, called message by message (tests, embedding). For
+/// stdio use [`serve`], which also keeps progress notifications and cancellation.
 pub struct BrServer {
     server: Server,
     tools: Vec<Value>,
@@ -222,110 +365,128 @@ impl BrServer {
         self.server.backend()
     }
 
-    /// Serve newline-delimited JSON-RPC until `input` closes.
-    pub fn serve(&mut self, input: impl BufRead, mut output: impl Write) -> std::io::Result<()> {
-        for line in input.lines() {
-            if let Some(reply) = self.handle_line(&line?) {
-                writeln!(output, "{reply}")?;
-                output.flush()?;
-            }
-        }
-        Ok(())
-    }
-
     /// Handle one line; the reply line, or `None` for notifications and blank lines.
     pub fn handle_line(&mut self, line: &str) -> Option<String> {
         let line = line.trim();
         if line.is_empty() {
             return None;
         }
-        let reply = match serde_json::from_str::<Value>(line) {
+        match serde_json::from_str::<Value>(line) {
             Ok(Value::Array(batch)) if !batch.is_empty() => {
                 let replies: Vec<Value> = batch.into_iter().filter_map(|m| self.handle(m)).collect();
-                (!replies.is_empty()).then_some(Value::Array(replies))
+                (!replies.is_empty()).then(|| Value::Array(replies).to_string())
             }
-            Ok(msg @ Value::Object(_)) => self.handle(msg),
-            // anything else (an empty batch, a bad message) LightCraft's server answers
-            Ok(_) => return self.server.handle_line(line),
-            Err(e) => Some(rpc_error(Value::Null, -32700, format!("parse error: {e}"))),
-        };
-        reply.map(|r| r.to_string())
+            Ok(msg @ Value::Object(_)) => self.handle(msg).map(|r| r.to_string()),
+            // anything else (an empty batch, a bad message, bad JSON) LightCraft's server answers
+            _ => self.server.handle_line(line),
+        }
     }
 
     /// Handle one JSON-RPC message.
     pub fn handle(&mut self, msg: Value) -> Option<Value> {
-        let method = msg.get("method").and_then(Value::as_str).unwrap_or_default().to_string();
-        let id = msg.get("id").cloned();
-        match method.as_str() {
-            "tools/call" if id.is_some() => {
-                let name = msg["params"]["name"].as_str().unwrap_or_default();
-                if name.starts_with(TOOL_PREFIX) {
-                    let args = msg["params"].get("arguments").cloned().unwrap_or_else(|| json!({}));
-                    let id = id.unwrap_or(Value::Null);
-                    return Some(match self.call(name, &args) {
-                        Ok(r) => rpc_result(id, r.to_value()),
-                        Err((code, m)) => rpc_error(id, code, m),
-                    });
-                }
-                self.server.handle(msg)
-            }
-            "tools/list" => {
+        match front(&self.tools, msg) {
+            Front::Reply(r) => Some(r),
+            Front::Forward(msg, p) => {
                 let mut r = self.server.handle(msg)?;
-                if let Some(list) = r.pointer_mut("/result/tools").and_then(Value::as_array_mut) {
-                    let lc = std::mem::take(list);
-                    list.extend(self.tools.iter().cloned());
-                    list.extend(lc);
+                if let Some((_, p)) = p {
+                    patch(&self.tools, p, &mut r);
                 }
                 Some(r)
             }
-            "initialize" => {
-                let mut r = self.server.handle(msg)?;
-                if let Some(res) = r.get_mut("result").and_then(Value::as_object_mut) {
-                    let lc = res.get("instructions").and_then(Value::as_str).unwrap_or_default().to_string();
-                    res.insert("serverInfo".into(), json!({"name": "br", "title": "BR", "version": env!("CARGO_PKG_VERSION")}));
-                    res.insert("instructions".into(), json!(format!("{INSTRUCTIONS}\n\nLightCraft: {lc}")));
-                }
-                Some(r)
-            }
-            _ => self.server.handle(msg),
         }
     }
+}
 
-    /// Call one `br_*` tool. `Err` is a protocol error (unknown tool, bad argument names); a
-    /// failing command is a tool result with `isError`.
-    pub fn call(&mut self, name: &str, args: &Value) -> Result<ToolResult, (i64, String)> {
-        let def = self.tools.iter().find(|t| t["name"] == name).ok_or((-32602, format!("unknown tool `{name}`")))?;
-        let args = if args.is_null() { json!({}) } else { args.clone() };
-        let Some(given) = args.as_object() else { return Err((-32602, "arguments must be an object".into())) };
-        let props = def["inputSchema"]["properties"].as_object().cloned().unwrap_or_default();
-        if let Some(k) = given.keys().find(|k| !props.contains_key(*k)) {
-            let known: Vec<&String> = props.keys().collect();
-            return Err((-32602, format!("unknown argument `{k}` for {name} (known: {known:?})")));
-        }
-        for r in def["inputSchema"]["required"].as_array().into_iter().flatten().filter_map(Value::as_str) {
-            if !given.contains_key(r) {
-                return Err((-32602, format!("{name} needs `{r}`")));
+/// Serve newline-delimited JSON-RPC from `input` to `output` until `input` closes.
+///
+/// LightCraft's own server loop runs on a thread of its own and does all the work; this thread
+/// reads the client's lines, rewrites `br_*` calls (or answers bad ones), and a third thread
+/// writes LightCraft's replies out, patching `initialize` and `tools/list`. Notifications such as
+/// progress pass straight through, and a cancellation reaches LightCraft while it exports.
+pub fn serve(backend: BrBackend, full: bool, input: impl BufRead, output: impl Write + Send + 'static) -> std::io::Result<()> {
+    let tools = Arc::new(tools());
+    let out = Arc::new(Mutex::new(output));
+    let pending: Arc<Mutex<HashMap<String, Patch>>> = Arc::default();
+    let (lc_in, mut to_lc) = std::io::pipe()?;
+    let (from_lc, lc_out) = std::io::pipe()?;
+    // LightCraft's server is not `Send`: it is built on the thread that runs it
+    let server = std::thread::Builder::new()
+        .name("br-mcp-lightcraft".into())
+        .spawn(move || Server::new(Box::new(backend)).with_command_tools(full).serve(BufReader::new(lc_in), lc_out))?;
+    let pump = {
+        let (tools, out, pending) = (tools.clone(), out.clone(), pending.clone());
+        std::thread::Builder::new().name("br-mcp-out".into()).spawn(move || -> std::io::Result<()> {
+            for line in BufReader::new(from_lc).lines() {
+                let line = line?;
+                let text = match serde_json::from_str::<Value>(&line) {
+                    Ok(mut v) => {
+                        patch_reply(&tools, &pending, &mut v);
+                        v.to_string()
+                    }
+                    Err(_) => line,
+                };
+                let mut o = out.lock().map_err(|_| std::io::Error::other("output lock poisoned"))?;
+                writeln!(o, "{text}")?;
+                o.flush()?;
             }
-        }
-        let backend = self.server.backend();
-        let r = catch_unwind(AssertUnwindSafe(|| {
-            if name == "br_preview" {
-                let mut a = Map::new();
-                if let Some(v) = given.get("id") {
-                    a.insert("id".into(), v.clone());
+            Ok(())
+        })?
+    };
+    let reply = |v: &Value| -> std::io::Result<()> {
+        let mut o = out.lock().map_err(|_| std::io::Error::other("output lock poisoned"))?;
+        writeln!(o, "{v}")?;
+        o.flush()
+    };
+    let mut result = Ok(());
+    for line in input.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => {
+                result = Err(e);
+                break;
+            }
+        };
+        let forward = match serde_json::from_str::<Value>(line.trim()) {
+            Ok(Value::Array(batch)) if !batch.is_empty() => {
+                let mut keep = Vec::new();
+                for m in batch {
+                    match front(&tools, m) {
+                        Front::Reply(r) => reply(&r)?,
+                        Front::Forward(m, p) => {
+                            if let (Some((id, p)), Ok(mut map)) = (p, pending.lock()) {
+                                map.insert(id, p);
+                            }
+                            keep.push(m);
+                        }
+                    }
                 }
-                a.insert("max_side".into(), given.get("max_side").cloned().unwrap_or(json!(1024)));
-                a.insert("format".into(), given.get("format").cloned().unwrap_or(json!("jpeg")));
-                return call_tool(backend, "render_preview", &Value::Object(a));
+                (!keep.is_empty()).then(|| Value::Array(keep).to_string())
             }
-            let Some(command) = command_of(name) else { return ToolResult::error(format!("no command for {name}")) };
-            match backend.call("engine.execute", json!({"command": command, "params": args})) {
-                Ok(v) => ToolResult::json(v),
-                Err(e) => ToolResult::error(e),
-            }
-        }));
-        Ok(r.unwrap_or_else(|_| ToolResult::error(format!("{name} failed unexpectedly (internal error); the session is still usable"))))
+            Ok(msg @ Value::Object(_)) => match front(&tools, msg) {
+                Front::Reply(r) => {
+                    reply(&r)?;
+                    None
+                }
+                Front::Forward(m, p) => {
+                    if let (Some((id, p)), Ok(mut map)) = (p, pending.lock()) {
+                        map.insert(id, p);
+                    }
+                    Some(m.to_string())
+                }
+            },
+            // blank lines, bad JSON, empty batches: LightCraft answers them as it would
+            _ => Some(line),
+        };
+        if let Some(f) = forward
+            && (writeln!(to_lc, "{f}").is_err() || to_lc.flush().is_err())
+        {
+            break; // LightCraft's server has stopped
+        }
     }
+    drop(to_lc); // end of input for LightCraft's server
+    let served = server.join().map_err(|_| std::io::Error::other("the MCP server thread panicked"))?;
+    let pumped = pump.join().map_err(|_| std::io::Error::other("the MCP output thread panicked"))?;
+    result.and(served).and(pumped)
 }
 
 #[cfg(test)]
@@ -345,6 +506,36 @@ mod tests {
         for (id, _, _) in commands::COMMANDS {
             let name = format!("br_{}", id.trim_start_matches("br."));
             assert!(tools().iter().any(|t| t["name"] == name.as_str()), "{id}");
+        }
+    }
+
+    #[test]
+    fn edits_are_destructive_reads_and_exports_are_not() {
+        for t in tools() {
+            let a = &t["annotations"];
+            let name = t["name"].as_str().unwrap();
+            let expect = a["readOnlyHint"] == false && name != "br_export";
+            assert_eq!(a["destructiveHint"], expect, "{name}");
+        }
+    }
+
+    #[test]
+    fn arguments_are_checked_against_the_schema() {
+        let tools = tools();
+        let def = |n: &str| tools.iter().find(|t| t["name"] == n).unwrap().clone();
+        assert!(check_args(&def("br_adjust"), &json!({"light": 10, "id": 3})).is_ok());
+        for (tool, args) in [
+            ("br_adjust", json!({"brightness": 1})),
+            ("br_adjust", json!({"light": 101})),
+            ("br_adjust", json!({"light": "10"})),
+            ("br_state", json!({"id": "14"})),
+            ("br_state", json!({"id": 14.5})),
+            ("br_preview", json!({"id": "3"})),
+            ("br_crop", json!({"format": "3:2"})),
+            ("br_crop", json!({})),
+            ("br_look", json!({"look": "lc.moody", "amount": -1})),
+        ] {
+            assert!(check_args(&def(tool), &args).is_err(), "{tool} {args}");
         }
     }
 }

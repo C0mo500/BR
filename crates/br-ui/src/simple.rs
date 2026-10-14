@@ -15,6 +15,8 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -24,11 +26,13 @@ use br_photo::crop::{self, Format};
 use br_photo::export::{self, Preset, Target};
 use br_photo::looks;
 use egui::{Align, Color32, CornerRadius, Layout, Rect, RichText, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
+use lightcraft_engine::activity::Cancel;
 use lightcraft_engine::catalog::PhotoId;
 use lightcraft_engine::develop::DevelopSettings;
 use lightcraft_ui_egui::render::Slot;
 use serde_json::{Value, json};
 
+use crate::desktop::{self, Pick};
 use crate::style::{self, ACCENT, Theme};
 use crate::{BrApp, Mode};
 
@@ -77,10 +81,18 @@ struct ExportJob {
     preset: Preset,
 }
 
+/// A file dialog that is open, and what its answer is for.
+struct Picking {
+    what: Pick,
+    answer: Receiver<Vec<PathBuf>>,
+}
+
 /// Looks rendered for one photo's settings.
 struct LooksCache {
     photo: PhotoId,
     base: Arc<DevelopSettings>,
+    /// LightCraft's preset list generation (looks added, renamed or deleted in Pro mode)
+    presets: u64,
     /// (look id, shown name, group, settings at 100 %)
     looks: Vec<(String, String, String, DevelopSettings)>,
 }
@@ -104,6 +116,8 @@ pub struct SimpleState {
     looks: Option<LooksCache>,
     /// The active photo last frame (to scroll the filmstrip to a new one).
     shown: Option<PhotoId>,
+    /// An open file dialog.
+    picking: Option<Picking>,
 }
 
 impl Default for SimpleState {
@@ -120,6 +134,7 @@ impl Default for SimpleState {
             message: None,
             looks: None,
             shown: None,
+            picking: None,
         }
     }
 }
@@ -165,11 +180,12 @@ pub fn show(app: &mut BrApp, ui: &mut Ui) {
     let ctx = ui.ctx().clone();
     let t = Theme::get(&ctx);
 
-    // a drag whose release we never saw (the pointer left the window) ends here
-    if (app.simple.drag.is_some() || app.simple.look_drag) && !ctx.input(|i| i.pointer.any_down()) {
+    // a drag whose release we never saw (the pointer left the window) ends here; on the frame of
+    // the release itself, the slider ends it (its last move belongs to the drag)
+    if (app.simple.drag.is_some() || app.simple.look_drag) && !ctx.input(|i| i.pointer.any_down() || i.pointer.any_released()) {
         finish_drags(app);
     }
-    poll_export(app, &ctx);
+    poll_pick(app, &ctx);
 
     let photos = app.lc.session.visible_cloned();
     let mut active = app.lc.session.active().filter(|id| photos.contains(id));
@@ -182,9 +198,13 @@ pub fn show(app: &mut BrApp, ui: &mut Ui) {
 
     shortcuts(app, &ctx, active);
     top_bar(app, ui, &t, active);
+    // "Temporary session" while the library could not be opened
+    lightcraft_ui_egui::panels::library_problem::banner(&mut app.lc, ui);
 
     let Some(id) = active else {
-        empty(app, ui, &t);
+        // photos hidden by a filter or source chosen in Pro mode, or no photos at all
+        let hidden = app.lc.session.catalog.photos().any(|p| p.in_library());
+        empty(app, ui, &t, hidden);
         return;
     };
 
@@ -293,11 +313,27 @@ fn top_bar(app: &mut BrApp, ui: &mut Ui, t: &Theme, active: Option<PhotoId>) {
     });
 }
 
-fn empty(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
+fn empty(app: &mut BrApp, ui: &mut Ui, t: &Theme, hidden: bool) {
     let ctx = ui.ctx().clone();
     egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.canvas)).show(ui, |ui| {
         ui.with_layout(Layout::top_down(Align::Center), |ui| {
             ui.add_space((ui.available_height() / 2.0 - 90.0).max(20.0));
+            if hidden {
+                ui.label(RichText::new("Keine Fotos in dieser Ansicht").size(24.0).color(t.text));
+                ui.add_space(6.0);
+                ui.label(RichText::new("Ein Filter oder ein Album aus dem Pro-Modus blendet alle Fotos aus.").size(14.0).color(t.dim));
+                ui.add_space(18.0);
+                let r = style::button(ui, t, "  Alle Fotos zeigen  ", true, true);
+                app.widgets.insert("show.all".into(), r.rect);
+                if r.clicked() {
+                    let s = &mut app.lc.session;
+                    let r = s.execute("library.clearFilter", &json!({})).and_then(|_| s.execute("library.source", &json!({"kind": "all"})));
+                    if let Err(e) = r {
+                        say(app, &ctx, e.to_string(), true);
+                    }
+                }
+                return;
+            }
             ui.label(RichText::new("Noch keine Fotos").size(24.0).color(t.text));
             ui.add_space(6.0);
             ui.label(RichText::new("Füge Fotos hinzu, um sie zu bearbeiten.").size(14.0).color(t.dim));
@@ -314,13 +350,38 @@ fn empty(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
     });
 }
 
-fn import_dialog(app: &mut BrApp, ctx: &egui::Context) {
-    let Some(files) = rfd::FileDialog::new().set_title("Fotos importieren").add_filter("Fotos", lightcraft_engine::import::EXTENSIONS).pick_files()
-    else {
+/// Open a file dialog (on its own thread); [`poll_pick`] acts on the answer.
+fn open_dialog(app: &mut BrApp, ctx: &egui::Context, what: Pick, title: &str, start: Option<PathBuf>) {
+    if app.simple.picking.is_some() {
         return;
+    }
+    match desktop::pick(ctx, what, title, start) {
+        Ok(answer) => app.simple.picking = Some(Picking { what, answer }),
+        Err(e) => say(app, ctx, e, true),
+    }
+}
+
+fn import_dialog(app: &mut BrApp, ctx: &egui::Context) {
+    open_dialog(app, ctx, Pick::Photos, "Fotos importieren", None);
+}
+
+fn poll_pick(app: &mut BrApp, ctx: &egui::Context) {
+    let Some(p) = &app.simple.picking else { return };
+    let chosen = match p.answer.try_recv() {
+        Ok(chosen) => chosen,
+        Err(std::sync::mpsc::TryRecvError::Empty) => return,
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => Vec::new(),
     };
-    let paths: Vec<String> = files.into_iter().map(|p| p.to_string_lossy().into_owned()).collect();
-    import(app, ctx, paths);
+    let what = p.what;
+    app.simple.picking = None;
+    match what {
+        Pick::Photos => import(app, ctx, chosen.into_iter().map(|p| p.to_string_lossy().into_owned()).collect()),
+        Pick::Folder => {
+            if let Some(dir) = chosen.into_iter().next() {
+                app.simple.export_dir = dir;
+            }
+        }
+    }
 }
 
 /// Import files or folders in the background (LightCraft's import; it reports when done).
@@ -515,7 +576,8 @@ fn looks_tab(app: &mut BrApp, ui: &mut Ui, t: &Theme, id: PhotoId) {
 
     // the tiles: rendered from the settings before the current look
     let Some(base) = current.as_ref().map(|l| l.base.clone()).or_else(|| app.lc.session.develop_of(id)) else { return };
-    let stale = app.simple.looks.as_ref().is_none_or(|c| c.photo != id || !Arc::ptr_eq(&c.base, &base));
+    let presets = app.lc.session.presets.generation();
+    let stale = app.simple.looks.as_ref().is_none_or(|c| c.photo != id || !Arc::ptr_eq(&c.base, &base) || c.presets != presets);
     if stale {
         let s = &app.lc.session;
         let looks = looks::list(s)
@@ -527,7 +589,7 @@ fn looks_tab(app: &mut BrApp, ui: &mut Ui, t: &Theme, id: PhotoId) {
                 Some((l.id, name, group, looks::blend_look(&base, p, 1.0)))
             })
             .collect();
-        app.simple.looks = Some(LooksCache { photo: id, base: base.clone(), looks });
+        app.simple.looks = Some(LooksCache { photo: id, base: base.clone(), presets, looks });
     }
     let tiles: Vec<(String, String, String, DevelopSettings)> = app.simple.looks.as_ref().map(|c| c.looks.clone()).unwrap_or_default();
     let mut groups: Vec<String> = Vec::new();
@@ -746,10 +808,9 @@ fn export_tab(app: &mut BrApp, ui: &mut Ui, t: &Theme, id: PhotoId) {
     ui.label(RichText::new(app.simple.export_dir.to_string_lossy()).size(12.0).color(t.text));
     let r = style::button(ui, t, "Ordner wählen…", false, true);
     app.widgets.insert("export.dir".into(), r.rect);
-    if r.clicked()
-        && let Some(dir) = rfd::FileDialog::new().set_title("Export-Ordner").set_directory(&app.simple.export_dir).pick_folder()
-    {
-        app.simple.export_dir = dir;
+    if r.clicked() {
+        let start = Some(app.simple.export_dir.clone()).filter(|d| d.is_dir());
+        open_dialog(app, &ctx, Pick::Folder, "Export-Ordner", start);
     }
     ui.add_space(14.0);
     let busy = app.simple.exporting();
@@ -788,18 +849,44 @@ pub fn start_export(app: &mut BrApp, ctx: &egui::Context) {
     let preset = app.simple.export_preset;
     let target = Target::Dir(app.simple.export_dir.clone());
     match export::prepare(&mut app.lc.session, id, preset, &target) {
-        Ok(plan) => match std::thread::Builder::new().name("br-export".into()).spawn(move || plan.run()) {
-            Ok(handle) => {
-                app.simple.export = Some(ExportJob { handle, preset });
-                app.simple.last_export = None;
+        Ok(plan) => {
+            // an activity task: LightCraft's quit prompt then warns about it, and Quit Anyway stops it
+            let cancel = Arc::new(AtomicBool::new(false));
+            let row = app.lc.session.activity.start("export", "Exporting", Cancel::Flag(cancel.clone()));
+            let spawned = std::thread::Builder::new().name("br-export".into()).spawn(move || {
+                let _row = row; // listed exactly as long as the export runs
+                plan.run_with_cancel(&cancel)
+            });
+            match spawned {
+                Ok(handle) => {
+                    app.simple.export = Some(ExportJob { handle, preset });
+                    app.simple.last_export = None;
+                }
+                Err(e) => say(app, ctx, format!("Export: {e}"), true),
             }
-            Err(e) => say(app, ctx, format!("Export: {e}"), true),
-        },
+        }
         Err(e) => say(app, ctx, format!("Export: {e}"), true),
     }
 }
 
-fn poll_export(app: &mut BrApp, ctx: &egui::Context) {
+/// Wait up to `timeout` for a running export to finish (when the window closes).
+pub(crate) fn wait_for_export(app: &mut BrApp, timeout: Duration) {
+    let start = std::time::Instant::now();
+    while app.simple.export.as_ref().is_some_and(|j| !j.handle.is_finished()) && start.elapsed() < timeout {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    if app.simple.export.as_ref().is_some_and(|j| j.handle.is_finished())
+        && let Some(job) = app.simple.export.take()
+    {
+        match job.handle.join() {
+            Ok(Ok(files)) => log::info!("export finished on exit: {} file(s)", files.len()),
+            Ok(Err(e)) => log::error!("export on exit: {e}"),
+            Err(_) => log::error!("export on exit: the export thread stopped unexpectedly"),
+        }
+    }
+}
+
+pub(crate) fn poll_export(app: &mut BrApp, ctx: &egui::Context) {
     let Some(job) = &app.simple.export else { return };
     if !job.handle.is_finished() {
         ctx.request_repaint_after(Duration::from_millis(100));

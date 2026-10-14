@@ -656,6 +656,7 @@ dependencies = [
  "lightcraft-ui-egui",
  "log",
  "serde_json",
+ "winit",
 ]
 
 [[package]]
