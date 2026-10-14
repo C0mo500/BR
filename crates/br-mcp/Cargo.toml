@@ -1,6 +1,6 @@
 [package]
 name = "br-mcp"
-description = "br mcp: BR Foto for AI agents over the Model Context Protocol (LightCraft's MCP server plus typed br_* tools)"
+description = "br mcp: BR for AI agents over the Model Context Protocol (LightCraft's MCP server plus typed br_* photo and br_video_* video tools on FilmCraft)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,6 +8,8 @@ rust-version.workspace = true
 
 [dependencies]
 br-photo = { workspace = true }
+br-video = { workspace = true }
+lightcraft-codecs = { workspace = true }
 lightcraft-engine = { workspace = true }
 lightcraft-mcp = { workspace = true }
 serde_json = { workspace = true }

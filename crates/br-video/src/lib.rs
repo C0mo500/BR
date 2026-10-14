@@ -189,7 +189,27 @@ pub const COMMANDS: &[CommandInfo] = &[
         summary: "A dissolve at the cuts between the selected clips (every cut of the main track without a selection)",
     },
     CommandInfo { id: "br.video.state", params: "{}", summary: "The video at a glance: format, length, clips, playhead" },
+    CommandInfo {
+        id: "br.video.commands",
+        params: r#"{"query":str?}"#,
+        summary: "FilmCraft's commands (id, label, menu, parameters) whose id or label contains `query`",
+    },
 ];
+
+/// The picture of the video at `seconds` (at the playhead without), at most `max_side` pixels on
+/// its long side: (width, height, RGBA8 pixels).
+pub fn frame(s: &Session, seconds: Option<f64>, max_side: u32) -> Result<(u32, u32, Vec<u8>), String> {
+    let q = s.active_sequence().ok_or("no video yet")?;
+    let long = q.settings.width.max(q.settings.height).max(1);
+    let scale = (max_side.max(16) as f32 / long as f32).min(1.0);
+    let t = match seconds {
+        Some(sec) if sec.is_finite() && sec >= 0.0 => filmcraft_time::Tick::from_seconds_f64(sec),
+        Some(sec) => return Err(format!("`seconds` must be 0 or more, not {sec}")),
+        None => s.playhead(),
+    };
+    let img = s.try_render_program_at(scale, t).map_err(|e| e.to_string())?;
+    Ok((img.w as u32, img.h as u32, img.to_rgba8()))
+}
 
 /// Where videos are exported: `$BR_EXPORTS` (as photos; a hosted BR serves that folder), else
 /// the system's videos folder ▸ BR Exports.
@@ -585,6 +605,15 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
             run(s, "export.quick", json!({"preset": preset.filmcraft, "path": path.to_string_lossy(), "wait": wait}))
         }
         "br.video.state" => state(s),
+        "br.video.commands" => {
+            let query = p.get("query").and_then(Value::as_str).unwrap_or("").to_lowercase();
+            let list: Vec<Value> = filmcraft_engine::command_specs()
+                .iter()
+                .filter(|c| query.is_empty() || c.id.to_lowercase().contains(&query) || c.label.to_lowercase().contains(&query))
+                .map(|c| json!({"id": c.id, "label": c.label, "menu": c.menu, "params": c.params}))
+                .collect();
+            Ok(json!(list))
+        }
         _ => Err(format!("unknown command `{id}`: see br.video.* in `br commands`")),
     }
 }

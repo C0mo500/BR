@@ -40,8 +40,10 @@ USAGE
       BR_CONFIG_DIR=DIR keeps both in DIR; set empty, nothing is kept.
 
   br mcp [--library DIR | --demo] [--full] [FILES…]
-      MCP server on stdio for AI agents (Claude Code: `claude mcp add br -- br mcp`).
-      Without --library or --demo the photos live in memory (FILES are imported and selected).
+      MCP server on stdio for AI agents (Claude Code: `claude mcp add br -- br mcp`): photos
+      (br_* tools, LightCraft's) and video (br_video_* tools, film_commands/film_run for all of
+      FilmCraft). Without --library or --demo the photos live in memory; FILES: photos are
+      imported and selected, videos, sound and subtitles go into the video.
       --full also lists every LightCraft command as a cmd_* tool (about 330 tools).
       A library open in the BR window cannot be opened here at the same time.
 
@@ -464,6 +466,12 @@ fn mcp(args: &[String]) -> Result<(), String> {
         (None, false) => "photos in memory (import them first; nothing is kept after the server stops)".to_string(),
     };
     let mut backend = BrBackend::new(Headless::new(session), origin);
+    // videos, sound and subtitles into the video project, the rest into the photo library
+    let (videos, files): (Vec<String>, Vec<String>) = files.into_iter().partition(|f| br_video::is_video_file(f));
+    if !videos.is_empty() {
+        let st = br_video::execute(&mut backend.video, "br.video.add", &json!({"paths": videos}))?;
+        log::info!("video: {st}");
+    }
     if !files.is_empty() {
         let r = import_and_select(&mut backend.inner.session, &files)?;
         log::info!(

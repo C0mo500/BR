@@ -702,6 +702,8 @@ name = "br-mcp"
 version = "0.1.0"
 dependencies = [
  "br-photo",
+ "br-video",
+ "lightcraft-codecs",
  "lightcraft-engine",
  "lightcraft-mcp",
  "log",

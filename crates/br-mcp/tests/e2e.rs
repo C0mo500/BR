@@ -191,3 +191,67 @@ fn null_means_not_given_and_batches_stay_one_array() {
     assert!(arrays.iter().any(|a| ids(a) == vec![3]), "{out}");
     assert!(lines.iter().filter(|l| l.is_object()).all(|l| l["id"] == 0), "only the initialize reply is a bare object: {out}");
 }
+
+fn have_ffmpeg() -> bool {
+    std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
+}
+
+#[test]
+fn an_agent_cuts_a_vertical_video_and_looks_at_it() {
+    if !have_ffmpeg() {
+        eprintln!("ffmpeg missing: skipped");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("br-mcp-video-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let clip = dir.join("IMG_0002.mp4");
+    let o = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1080x1920:rate=30:duration=3"])
+        .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"])
+        .arg(&clip)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let mut s = server(false);
+    let r = s.handle(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})).unwrap();
+    let names: Vec<&str> = r["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+    for n in ["br_video_add", "br_video_export", "br_video_preview", "film_run", "film_commands", "br_state"] {
+        assert!(names.contains(&n), "{n} missing");
+    }
+    assert_eq!(ok(&mut s, "br_video_state", json!({})), json!({"video": null}));
+    let st = ok(&mut s, "br_video_add", json!({"paths": [clip.to_string_lossy()]}));
+    assert_eq!(st["format"], "9:16", "{st}");
+    ok(&mut s, "br_video_split", json!({"seconds": 1.0}));
+    let seq = ok(&mut s, "film_run", json!({"command": "sequence.inspect"}));
+    assert_eq!(seq["video"][0]["items"].as_array().map(Vec::len), Some(2), "{seq}");
+    ok(&mut s, "br_video_text", json!({"text": "Hallo"}));
+    let found = ok(&mut s, "film_commands", json!({"query": "razor"}));
+    assert!(found.as_array().unwrap().iter().any(|c| c["id"] == "timeline.razor"), "{found}");
+    let looks = ok(&mut s, "br_video_looks", json!({}));
+    let first = looks["presets"][0]["name"].as_str().unwrap().to_string();
+    ok(&mut s, "br_video_filter", json!({"preset": first}));
+    let undo = ok(&mut s, "br_video_undo", json!({}));
+    assert!(undo["undone"].is_string() || undo["undone"].is_boolean() || !undo.is_null(), "{undo}");
+
+    // a frame as an image
+    let r = call(&mut s, "br_video_preview", json!({"seconds": 0.5, "max_side": 256}));
+    assert_eq!(r["result"]["isError"], false, "{r}");
+    let content = r["result"]["content"].as_array().unwrap();
+    assert_eq!(content[0]["type"], "image");
+    let info: Value = serde_json::from_str(content[1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!((info["width"].as_u64(), info["height"].as_u64()), (Some(144), Some(256)), "{info}");
+
+    // the file, waited for
+    let out = dir.join("reel.mp4");
+    let r = ok(&mut s, "br_video_export", json!({"preset": "social", "path": out.to_string_lossy()}));
+    assert!(std::fs::metadata(&out).unwrap().len() > 1000, "{r}");
+
+    // mistakes come back as tool errors, the video unchanged
+    let r = call(&mut s, "br_video_format", json!({"format": "3:2"}));
+    assert!(r["error"].is_object() || r["result"]["isError"] == true, "{r}");
+    let r = call(&mut s, "film_run", json!({"command": "no.such"}));
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

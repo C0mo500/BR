@@ -1,11 +1,16 @@
-//! `br mcp`: BR Foto for AI agents over the Model Context Protocol.
+//! `br mcp`: BR for AI agents over the Model Context Protocol: photos (LightCraft) and video
+//! (FilmCraft) in one server.
 //!
 //! LightCraft already ships a complete MCP server (`lightcraft-mcp`): import, query, develop,
 //! render and export tools, plus one `cmd_*` tool per engine command. BR keeps all of it and adds:
 //!
 //! - [`BrBackend`]: LightCraft's in-process [`Headless`] backend with the `br.*` commands of
 //!   [`br_photo::commands`] routed in, so they also work through `command_run` and, with `--full`,
-//!   as `cmd_br_*` tools.
+//!   as `cmd_br_*` tools; and a FilmCraft session for the video: `br.video.*` ([`br_video`]) and
+//!   every FilmCraft command as `film.<id>`.
+//! - Typed `br_video_*` tools for the video (CapCut's steps: add, cut, text, captions, music,
+//!   filter, format, export, a preview image) and `film_commands` / `film_run` for all of
+//!   FilmCraft (timeline, Lumetri, keyframes, Essential Sound, …).
 //! - A front ([`serve`], [`BrServer`]) for LightCraft's [`Server`]: it names the server `br`, puts
 //!   BR's instructions first and lists typed `br_*` tools (proper schemas, a preview image) ahead
 //!   of LightCraft's own. A `br_*` call is checked against its schema and handed to LightCraft's
@@ -31,36 +36,78 @@ use serde_json::{Map, Value, json};
 pub const TOOL_PREFIX: &str = "br_";
 
 /// What `br mcp` tells the agent first.
-pub const INSTRUCTIONS: &str = "BR is a media suite; this server is BR Foto, simple photo editing on LightCraft's engine. \
-Start with the br_* tools: they work on the active photo unless you pass `id`. A typical edit: `import` the files (or \
+pub const INSTRUCTIONS: &str = "BR is a media suite: photos on LightCraft's engine and video on FilmCraft's (a full editor: \
+timeline, colour, sound, captions, export). VIDEO: the br_video_* tools work on one video project. A typical edit: \
+`br_video_add` the clips (the first one's shape makes the video, or `br_video_new` with a format first), `br_video_split` / \
+`br_video_delete` / `br_video_speed` to cut, `br_video_text`, `br_video_auto_captions` (speech recognition) or \
+`br_video_captions` (SRT file), `br_video_music` (lowered under speech), `br_video_filter` (a look), `br_video_format` \
+(9:16, 16:9, 1:1, 4:5), `br_video_preview` to look at a frame, `br_video_export` (social, youtube, youtube4k, video, \
+prores). Each step is one undo step (`br_video_undo`). Everything else FilmCraft can do: `film_commands` to find a \
+command, `film_run` to run it (`sequence.inspect` describes the timeline; times are in ticks, 254016000000 per \
+second). PHOTOS: start with the br_* tools: they work on the active photo unless you pass `id`. A typical edit: `import` the files (or \
 `query_photos` / `select_photos` to pick one), `br_looks` then `br_look` for a style, `br_adjust` for light, contrast, \
 color, warmth, sharpness and vignette (-100..100, 0 = unchanged), `br_crop` for a format (1:1, 4:5, 9:16, 16:9), \
 `br_preview` to look at the result, and `br_export` with a preset (instagram 1080x1350, story 1080x1920, square, wide, \
 full). Every edit is one undo step (`br_undo`). For finer control use LightCraft's tools below (`list_controls`, \
 `set_develop`, `command_list`, `command_run`).";
 
-/// LightCraft's headless backend plus BR's `br.*` commands.
+/// LightCraft's headless backend plus BR's `br.*` commands, and the video project.
 pub struct BrBackend {
     pub inner: Headless,
     pub state: BrState,
+    /// The video project (FilmCraft): `br.video.*` and `film.<id>` run on it.
+    pub video: br_video::Session,
     /// How the session was opened, for the agent ("library at …", "demo photos", …).
     pub origin: String,
 }
 
 impl BrBackend {
     pub fn new(inner: Headless, origin: impl Into<String>) -> Self {
-        Self { inner, state: BrState::default(), origin: origin.into() }
+        Self { inner, state: BrState::default(), video: br_video::Session::default(), origin: origin.into() }
+    }
+
+    /// Render the video's frame for `br_video_preview` into a PNG at `path`.
+    fn video_frame(&mut self, id: u64, size: u64, path: &str) -> Result<Value, String> {
+        let ms = id - VIDEO_FRAME;
+        let seconds = (ms > 0).then(|| (ms - 1) as f64 / 1000.0);
+        let (w, h, rgba) = br_video::frame(&self.video, seconds, size.clamp(16, 4096) as u32)?;
+        let img = lightcraft_codecs::EncodeImage::new(w, h, 4, lightcraft_codecs::Samples::U8(&rgba));
+        let png = lightcraft_codecs::encode_png(&img, &lightcraft_codecs::EncodeMeta::default()).map_err(|e| e.to_string())?;
+        std::fs::write(path, png).map_err(|e| format!("{path}: {e}"))?;
+        let st = br_video::state(&mut self.video)?;
+        Ok(json!({"width": w, "height": h, "video": st["name"], "seconds": seconds.unwrap_or(st["playhead"].as_f64().unwrap_or(0.0))}))
     }
 }
+
+/// `br_video_preview` goes through LightCraft's `render_preview` (which turns a rendered file
+/// into an image for the agent): with a photo id from here up, BR renders the video's frame
+/// instead, at (id − this − 1) milliseconds (at the playhead for exactly this). Above any photo id
+/// LightCraft gives out, and below 2^53 so JSON numbers keep it exact.
+pub const VIDEO_FRAME: u64 = 1 << 52;
 
 impl Backend for BrBackend {
     fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
         if matches!(method, "engine.execute" | "ui.menu.invoke" | "command")
-            && let Some(id) = params.get("command").or(params.get("id")).and_then(Value::as_str).filter(|c| commands::is_br(c))
+            && let Some(id) = params.get("command").or(params.get("id")).and_then(Value::as_str)
         {
-            let id = id.to_string();
             let p = params.get("params").cloned().unwrap_or(Value::Null);
-            return commands::execute(&mut self.inner.session, &mut self.state, &id, &p).map_err(|e| e.to_string());
+            if br_video::is_video(id) {
+                return br_video::execute(&mut self.video, id, &p);
+            }
+            if let Some(film) = id.strip_prefix("film.") {
+                return br_video::execute(&mut self.video, film, &p);
+            }
+            if commands::is_br(id) {
+                let id = id.to_string();
+                return commands::execute(&mut self.inner.session, &mut self.state, &id, &p).map_err(|e| e.to_string());
+            }
+        }
+        if method == "ui.render"
+            && let Some(id) = params.get("id").and_then(Value::as_u64).filter(|i| *i >= VIDEO_FRAME)
+        {
+            let size = params.get("size").and_then(Value::as_u64).unwrap_or(1024);
+            let path = params.get("path").and_then(Value::as_str).unwrap_or_default().to_string();
+            return self.video_frame(id, size, &path);
         }
         let mut r = self.inner.call(method, params)?;
         if method == "engine.commands"
@@ -91,7 +138,7 @@ fn id_prop() -> Value {
 fn tool(name: &str, title: &str, description: &str, properties: Value, required: &[&str], read_only: bool) -> Value {
     // edits replace what the photo had (undoable, but a client asking before "destructive" calls
     // should ask); an export only writes a new file
-    let destructive = !read_only && name != "br_export";
+    let destructive = !read_only && !matches!(name, "br_export" | "br_video_export" | "br_video_preview");
     let idempotent = read_only || matches!(name, "br_adjust" | "br_crop" | "br_reset");
     json!({
         "name": name,
@@ -198,8 +245,216 @@ pub fn tools() -> Vec<Value> {
     ]
 }
 
+/// Every tool BR adds: photo, then video.
+pub fn all_tools() -> Vec<Value> {
+    let mut t = tools();
+    t.extend(video_tools());
+    t
+}
+
+/// The video tools and the command each runs (`br.video.*`, or FilmCraft's as `film.<id>`).
+const VIDEO_TOOLS: &[(&str, &str)] = &[
+    ("br_video_state", "br.video.state"),
+    ("br_video_new", "br.video.new"),
+    ("br_video_add", "br.video.add"),
+    ("br_video_split", "br.video.split"),
+    ("br_video_delete", "br.video.delete"),
+    ("br_video_speed", "br.video.speed"),
+    ("br_video_detach_audio", "br.video.detachAudio"),
+    ("br_video_text", "br.video.text"),
+    ("br_video_captions", "br.video.captions"),
+    ("br_video_auto_captions", "br.video.autoCaptions"),
+    ("br_video_music", "br.video.music"),
+    ("br_video_looks", "film.lumetri.presets"),
+    ("br_video_filter", "br.video.filter"),
+    ("br_video_format", "br.video.format"),
+    ("br_video_transition", "br.video.transition"),
+    ("br_video_export", "br.video.export"),
+    ("br_video_undo", "film.edit.undo"),
+    ("br_video_redo", "film.edit.redo"),
+    ("film_commands", "br.video.commands"),
+];
+
+fn clips_prop() -> Value {
+    json!({"type": "array", "items": {"type": "integer"}, "description": "Clip ids (default: the clips selected in the timeline); film_run sequence.inspect lists them"})
+}
+
+/// BR's typed video tools.
+pub fn video_tools() -> Vec<Value> {
+    let formats: Vec<&str> = br_video::Format::ALL.iter().map(|f| f.key()).collect();
+    let presets: Vec<&str> = br_video::EXPORT_PRESETS.iter().map(|p| p.key).collect();
+    let preset_doc: Vec<String> = br_video::EXPORT_PRESETS.iter().map(|p| format!("{} = {} ({})", p.key, p.label, p.detail)).collect();
+    vec![
+        tool(
+            "br_video_state",
+            "Video state",
+            "The video at a glance: name, format, size, length in seconds, clip counts, playhead, what undo would do. {\"video\": null} before there is one.",
+            json!({}),
+            &[],
+            true,
+        ),
+        tool(
+            "br_video_new",
+            "New video",
+            "Start a new, empty video in a format: 9:16 (1080x1920, TikTok/Reels/Shorts), 16:9 (1920x1080), 1:1, 4:5. Not needed before br_video_add, which makes a video in the first clip's shape.",
+            json!({"format": {"type": "string", "enum": formats}, "fps": {"type": "number", "minimum": 1, "maximum": 240}, "name": {"type": "string"}}),
+            &["format"],
+            false,
+        ),
+        tool(
+            "br_video_add",
+            "Add media",
+            "Import video, sound or image files and put them one after another at the end of the main track (or insert them at the playhead). One undo step.",
+            json!({"paths": {"type": "array", "items": {"type": "string"}, "description": "Files (absolute paths)"}, "at": {"type": "string", "enum": ["end", "playhead"]}}),
+            &["paths"],
+            false,
+        ),
+        tool(
+            "br_video_split",
+            "Split",
+            "Cut every clip under the playhead (or at `seconds`) in two.",
+            json!({"seconds": {"type": "number", "minimum": 0}}),
+            &[],
+            false,
+        ),
+        tool("br_video_delete", "Delete", "Delete clips and close the gap they leave (ripple delete).", json!({"clips": clips_prop()}), &[], false),
+        tool(
+            "br_video_speed",
+            "Speed",
+            "Play clips faster (2 = twice as fast) or slower (0.5); the clips after them move up or back.",
+            json!({"speed": {"type": "number", "minimum": 0.01, "maximum": 100}, "clips": clips_prop()}),
+            &["speed"],
+            false,
+        ),
+        tool(
+            "br_video_detach_audio",
+            "Detach audio",
+            "Separate picture and sound of clips (on linked clips; on unlinked ones it links them again).",
+            json!({"clips": clips_prop()}),
+            &[],
+            false,
+        ),
+        tool(
+            "br_video_text",
+            "Text",
+            "A title at the playhead (or at `at` seconds), `seconds` long (default 3).",
+            json!({"text": {"type": "string"}, "seconds": {"type": "number", "minimum": 0.04, "maximum": 3600}, "at": {"type": "number", "minimum": 0}}),
+            &["text"],
+            false,
+        ),
+        tool(
+            "br_video_captions",
+            "Captions from a file",
+            "Captions from a subtitle file (SRT, VTT, SCC, STL, TTML, …).",
+            json!({"path": {"type": "string"}}),
+            &["path"],
+            false,
+        ),
+        tool(
+            "br_video_auto_captions",
+            "Automatic captions",
+            "Recognise the speech in the video (Whisper, on this computer) and make captions from it, one undo step. The first time the model is downloaded (about 150 MB). Takes a while for long videos.",
+            json!({
+                "language": {"type": "string", "description": "Spoken language as an ISO code (de, en, fr, …) or auto (default)"},
+                "model": {"type": "string", "enum": ["whisper-tiny", "whisper-base", "whisper-small"], "description": "Default: the one in FilmCraft's settings (whisper-base)"},
+            }),
+            &[],
+            false,
+        ),
+        tool(
+            "br_video_music",
+            "Music",
+            "A music file on its own track under the video, as long as the video, set as music and lowered under speech (`duck`, default true). One undo step.",
+            json!({"path": {"type": "string"}, "duck": {"type": "boolean"}}),
+            &["path"],
+            false,
+        ),
+        tool(
+            "br_video_looks",
+            "List video looks",
+            "FilmCraft's Lumetri looks for br_video_filter: [{name, folder, description}].",
+            json!({}),
+            &[],
+            true,
+        ),
+        tool(
+            "br_video_filter",
+            "Filter",
+            "A look on clips (default: the selected ones, else every clip), replacing the look applied before; `none` removes it.",
+            json!({"preset": {"type": "string", "description": "A name from br_video_looks, or none"}, "clips": clips_prop()}),
+            &["preset"],
+            false,
+        ),
+        tool(
+            "br_video_format",
+            "Format",
+            "Change the video's shape; its clips fit into the new frame (`fit`) or fill it (`fill`, cropping the edges).",
+            json!({"format": {"type": "string", "enum": formats}, "fit": {"type": "string", "enum": ["fit", "fill"]}}),
+            &["format"],
+            false,
+        ),
+        tool(
+            "br_video_transition",
+            "Transition",
+            "A dissolve at the cuts between the given (or selected) clips; without either, at every cut of the main track. Cuts that have one keep it.",
+            json!({"clips": clips_prop()}),
+            &[],
+            false,
+        ),
+        tool(
+            "br_video_export",
+            "Export video",
+            &format!(
+                "Write the video as a file. Presets: {}. To `path`, else into BR's export folder named after the video. Waits until the file is written (`wait`: false starts it in the background).",
+                preset_doc.join("; ")
+            ),
+            json!({"preset": {"type": "string", "enum": presets}, "path": {"type": "string"}, "wait": {"type": "boolean"}}),
+            &["preset"],
+            false,
+        ),
+        tool(
+            "br_video_preview",
+            "Video preview",
+            "A frame of the video as an image: at the playhead, or at `seconds`.",
+            json!({
+                "seconds": {"type": "number", "minimum": 0},
+                "max_side": {"type": "integer", "minimum": 64, "maximum": 2048, "description": "Longest side in pixels (default 1024)"},
+                "format": {"type": "string", "enum": ["jpeg", "png"], "description": "Image format (default jpeg)"},
+            }),
+            &[],
+            true,
+        ),
+        tool("br_video_undo", "Undo (video)", "Undo the last change to the video.", json!({}), &[], false),
+        tool("br_video_redo", "Redo (video)", "Redo the last undone change to the video.", json!({}), &[], false),
+        tool(
+            "film_commands",
+            "FilmCraft commands",
+            "Find FilmCraft commands (its whole editor: timeline edits, Lumetri, effects and keyframes, Essential Sound, captions, export settings, …): id, label, menu and parameters of those whose id or label contains `query`.",
+            json!({"query": {"type": "string", "description": "e.g. razor, lumetri, keyframe, ducking (empty: all, a long list)"}}),
+            &[],
+            true,
+        ),
+        tool(
+            "film_run",
+            "Run a FilmCraft command",
+            "Run any FilmCraft command on the video by its id (from film_commands), with its parameters. Times are in ticks (254016000000 per second). Changes are undoable with br_video_undo.",
+            json!({"command": {"type": "string", "description": "e.g. sequence.inspect, timeline.razor, lumetri.set"}, "params": {"type": "object"}}),
+            &["command"],
+            false,
+        ),
+    ]
+}
+
+/// Whether `name` is one of BR's tools (the front handles those).
+fn is_br_tool(name: &str) -> bool {
+    name.starts_with(TOOL_PREFIX) || name.starts_with("film_")
+}
+
 /// The `br.*` command behind a `br_*` tool.
 fn command_of(tool: &str) -> Option<&'static str> {
+    if let Some((_, c)) = VIDEO_TOOLS.iter().find(|(t, _)| *t == tool) {
+        return Some(c);
+    }
     let name = tool.strip_prefix(TOOL_PREFIX)?;
     commands::COMMANDS.iter().map(|(id, _, _)| *id).find(|id| id.strip_prefix("br.") == Some(name))
 }
@@ -226,12 +481,24 @@ fn check_args(def: &Value, args: &Value) -> Result<(), String> {
             Some("integer") => v.is_u64() || v.is_i64(),
             Some("number") => v.as_f64().is_some_and(f64::is_finite),
             Some("string") => v.is_string(),
+            Some("boolean") => v.is_boolean(),
+            Some("object") => v.is_object(),
+            Some("array") => v.as_array().is_some_and(|a| match schema["items"]["type"].as_str() {
+                Some("integer") => a.iter().all(|x| x.is_u64() || x.is_i64()),
+                Some("string") => a.iter().all(Value::is_string),
+                _ => true,
+            }),
             _ => true,
         };
         if !ok {
             let want = match schema["type"].as_str() {
                 Some("integer") => "a whole number",
                 Some("number") => "a number",
+                Some("boolean") => "true or false",
+                Some("object") => "an object",
+                Some("array") if schema["items"]["type"] == "integer" => "a list of whole numbers",
+                Some("array") if schema["items"]["type"] == "string" => "a list of texts",
+                Some("array") => "a list",
                 _ => "text",
             };
             return Err(format!("{name}: `{k}` must be {want} (got {v})"));
@@ -282,7 +549,7 @@ fn front(tools: &[Value], msg: Value) -> Front {
         "tools/list" => Front::Forward(msg, Some((id.to_string(), Patch::ToolsList))),
         "tools/call" => {
             let name = msg["params"]["name"].as_str().unwrap_or_default().to_string();
-            if !name.starts_with(TOOL_PREFIX) || !msg["params"].is_object() {
+            if !is_br_tool(&name) || !msg["params"].is_object() {
                 return Front::Forward(msg, None);
             }
             let Some(def) = tools.iter().find(|t| t["name"] == name.as_str()) else {
@@ -298,7 +565,24 @@ fn front(tools: &[Value], msg: Value) -> Front {
             if let Some(o) = args.as_object_mut() {
                 o.retain(|_, v| !v.is_null());
             }
-            let (call, call_args) = if name == "br_preview" {
+            let (call, call_args) = if name == "br_video_preview" {
+                // through LightCraft's image path: an id from VIDEO_FRAME up is the video's frame
+                let ms = args.get("seconds").and_then(Value::as_f64).map_or(0, |s| (s * 1000.0).round() as u64 + 1);
+                let mut a = Map::new();
+                a.insert("id".into(), json!(VIDEO_FRAME + ms));
+                a.insert("max_side".into(), args.get("max_side").cloned().unwrap_or(json!(1024)));
+                a.insert("format".into(), args.get("format").cloned().unwrap_or(json!("jpeg")));
+                ("render_preview", Value::Object(a))
+            } else if name == "film_run" {
+                let command = args["command"].as_str().unwrap_or_default();
+                let params = args.get("params").cloned().unwrap_or(json!({}));
+                ("command_run", json!({"id": format!("film.{command}"), "params": params}))
+            } else if name == "br_video_export" && args.get("wait").is_none() {
+                // an agent wants the file: wait for it unless told otherwise
+                let mut a = args.clone();
+                a["wait"] = json!(true);
+                ("command_run", json!({"id": "br.video.export", "params": a}))
+            } else if name == "br_preview" {
                 let mut a = Map::new();
                 if let Some(v) = args.get("id") {
                     a.insert("id".into(), v.clone());
@@ -364,7 +648,7 @@ impl BrServer {
     /// `full`: also list one `cmd_*` tool per LightCraft command (about 330 tools; they cost an
     /// agent a lot of context, and every command stays reachable through `command_run` anyway).
     pub fn new(backend: BrBackend, full: bool) -> Self {
-        Self { server: Server::new(Box::new(backend)).with_command_tools(full), tools: tools() }
+        Self { server: Server::new(Box::new(backend)).with_command_tools(full), tools: all_tools() }
     }
 
     /// The backend, for callers that drive it directly.
@@ -411,7 +695,7 @@ impl BrServer {
 /// writes LightCraft's replies out, patching `initialize` and `tools/list`. Notifications such as
 /// progress pass straight through, and a cancellation reaches LightCraft while it exports.
 pub fn serve(backend: BrBackend, full: bool, input: impl BufRead, output: impl Write + Send + 'static) -> std::io::Result<()> {
-    let tools = Arc::new(tools());
+    let tools = Arc::new(all_tools());
     let out = Arc::new(Mutex::new(output));
     let pending: Arc<Mutex<HashMap<String, Patch>>> = Arc::default();
     // answers BR gave itself inside a batch, by the id of a request LightCraft answers in it
@@ -524,13 +808,23 @@ mod tests {
 
     #[test]
     fn every_tool_has_a_command_and_a_valid_name() {
-        for t in tools() {
+        for t in all_tools() {
             let name = t["name"].as_str().unwrap();
             assert!(name.len() <= 64 && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'), "{name}");
-            if name != "br_preview" {
+            assert!(is_br_tool(name), "{name}");
+            if !matches!(name, "br_preview" | "br_video_preview" | "film_run") {
                 assert!(command_of(name).is_some(), "{name}");
             }
         }
+        // and every video command has a tool
+        for c in br_video::COMMANDS {
+            assert!(VIDEO_TOOLS.iter().any(|(_, id)| *id == c.id), "{} has no tool", c.id);
+        }
+        let names: Vec<String> = all_tools().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
+        let mut unique = names.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), names.len(), "tool names are unique");
         // and every command has a tool
         for (id, _, _) in commands::COMMANDS {
             let name = format!("br_{}", id.trim_start_matches("br."));
@@ -540,18 +834,20 @@ mod tests {
 
     #[test]
     fn edits_are_destructive_reads_and_exports_are_not() {
-        for t in tools() {
+        for t in all_tools() {
             let a = &t["annotations"];
             let name = t["name"].as_str().unwrap();
-            let expect = a["readOnlyHint"] == false && name != "br_export";
+            let expect = a["readOnlyHint"] == false && !matches!(name, "br_export" | "br_video_export");
             assert_eq!(a["destructiveHint"], expect, "{name}");
         }
     }
 
     #[test]
     fn arguments_are_checked_against_the_schema() {
-        let tools = tools();
+        let tools = all_tools();
         let def = |n: &str| tools.iter().find(|t| t["name"] == n).unwrap().clone();
+        assert!(check_args(&def("br_video_add"), &json!({"paths": ["/a.mp4"], "at": "end"})).is_ok());
+        assert!(check_args(&def("film_run"), &json!({"command": "sequence.inspect", "params": {}})).is_ok());
         assert!(check_args(&def("br_adjust"), &json!({"light": 10, "id": 3})).is_ok());
         for (tool, args) in [
             ("br_adjust", json!({"brightness": 1})),
@@ -563,6 +859,14 @@ mod tests {
             ("br_crop", json!({"format": "3:2"})),
             ("br_crop", json!({})),
             ("br_look", json!({"look": "lc.moody", "amount": -1})),
+            ("br_video_add", json!({"paths": "/a.mp4"})),
+            ("br_video_add", json!({"paths": [1]})),
+            ("br_video_delete", json!({"clips": ["3"]})),
+            ("br_video_music", json!({"path": "/m.mp3", "duck": "yes"})),
+            ("br_video_format", json!({"format": "3:2"})),
+            ("br_video_speed", json!({"speed": 0})),
+            ("film_run", json!({"params": {}})),
+            ("film_run", json!({"command": "x", "params": [1]})),
         ] {
             assert!(check_args(&def(tool), &args).is_err(), "{tool} {args}");
         }
