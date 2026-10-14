@@ -22,7 +22,7 @@ set -euo pipefail
 : "${BR_RUN_DIR:=${TMPDIR:-/tmp}/br-web}"
 : "${BR_IMPORT_DIR:=$HOME}"
 : "${BR_VNC_PASSWORD_FILE:=$HOME/.br-web/vnc-passwort}"
-export BR_RENDERER="${BR_RENDERER:-glow}"
+export BR_RENDERER="${BR_RENDERER:-gl}"
 export LIGHTCRAFT_GPU="${LIGHTCRAFT_GPU:-0}"
 
 # Kein Desktop-Portal auf dem Server-Bildschirm: Datei-Dialoge kommen von zenity.

@@ -11,9 +11,12 @@
 //! answering the compositor while one is open.
 
 mod appearance;
+#[cfg(feature = "audio")]
+pub mod audio;
 #[cfg(target_os = "linux")]
 mod colord;
 mod editors;
+pub mod film;
 pub mod prefs;
 #[cfg(target_os = "macos")]
 mod screen_profile;
@@ -93,6 +96,12 @@ fn log_dir_with(platform: Platform, env: impl Fn(&str) -> Option<OsString>) -> O
         Platform::Other => xdg(&env, "XDG_DATA_HOME").or_else(|| set("HOME").map(|h| h.join(".local/share"))),
     };
     base.map(|b| b.join("BR").join("Logs"))
+}
+
+/// Where the video side keeps its settings, workspaces, auto-saves and crash-recovery journal
+/// (FilmCraft's data folder): `Video` beside BR's `Logs` folder.
+pub fn video_dir() -> Option<PathBuf> {
+    log_dir().and_then(|l| l.parent().map(|p| p.join("Video")))
 }
 
 /// Where the system keeps monitor profiles, for the Choose Monitor Profile dialog to start in: the

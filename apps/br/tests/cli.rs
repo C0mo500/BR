@@ -61,6 +61,21 @@ fn snapshot_then_edit_that_picture_with_br_photo() {
 }
 
 #[test]
+fn snapshot_draws_any_page_and_names_the_pages_it_knows() {
+    let dir = temp("pages");
+    let shot = dir.join("farbe.png");
+    let o = br().args(["snapshot", "--page", "farbe", "--size", "1000x700", "-o"]).arg(&shot).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(std::fs::metadata(&shot).unwrap().len() > 10_000);
+    let o = br().args(["snapshot", "--page", "fusion"]).output().unwrap();
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("medien, schnitt, farbe, ton, ausgabe, foto"));
+    let o = br().args(["snapshot", "--page", "ton", "--popover", "looks"]).output().unwrap();
+    assert!(!o.status.success(), "the photo tools are not on the Ton page");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn run_prints_one_json_line_per_command() {
     let o = br()
         .args(["run", "--demo", "br.look", "look=lc.moody", "amount=50", "br.adjust", "contrast=20", "br.crop", "format=1:1", "br.state"])

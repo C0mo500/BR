@@ -14,7 +14,9 @@ path = "src/main.rs"
 # denoise and HEIC/HEIF photos, all pure Rust. HEIC is in the default build here; whoever ships BR
 # where HEVC patents matter builds with `--no-default-features --features sam,denoise`.
 [features]
-default = ["sam", "denoise", "heif"]
+default = ["sam", "denoise", "heif", "audio"]
+# sound for video playback (cpal; on Linux it builds against the ALSA headers, libasound2-dev)
+audio = ["br-ui/audio"]
 sam = ["lightcraft-engine/sam"]
 denoise = ["lightcraft-engine/denoise"]
 heif = ["lightcraft-codecs/heif"]
@@ -29,7 +31,7 @@ lightcraft-sysmem = { workspace = true }
 lightcraft-mcp = { workspace = true }
 lightcraft-ui-egui = { workspace = true }
 egui = { workspace = true }
-eframe = { workspace = true, features = ["default_fonts", "wgpu", "glow", "accesskit", "wayland", "x11"] }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11"] }
 serde_json = { workspace = true }
 log = { workspace = true }
 

@@ -1,0 +1,17 @@
+[package]
+name = "br-video"
+description = "BR's video page logic: FilmCraft sessions and BR's one-step video commands (formats, cuts, text, captions, music, filters, export)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+filmcraft-engine = { workspace = true }
+filmcraft-project = { workspace = true }
+filmcraft-time = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+
+[lints]
+workspace = true

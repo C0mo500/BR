@@ -25,7 +25,7 @@ impl Driver {
     /// One frame with these input events.
     pub fn step(&mut self, app: &mut BrApp, events: Vec<egui::Event>) {
         let mut raw = HeadlessView::raw_input(self.size, self.ppp, self.time, events);
-        app.raw_input_hook(&mut raw);
+        app.raw_input_hook(&self.view.ctx, &mut raw);
         self.view.run(raw, |ui| {
             app.logic(ui.ctx());
             app.ui(ui);

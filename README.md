@@ -53,7 +53,7 @@ br photo urlaub.jpg --look "Golden Hour:70" --light 10 --preset instagram -o ins
 br run --demo br.look look=lc.moody br.crop format=9:16 br.export preset=story dir=out
 br looks                             # alle Looks
 br commands                          # die br.*-Befehle
-br snapshot --demo --tab export -o shot.png   # Fenster ohne Bildschirm als PNG
+br snapshot --demo --page farbe -o shot.png   # Fenster ohne Bildschirm als PNG
 br mcp --demo                        # MCP-Server
 ```
 

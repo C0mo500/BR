@@ -1,6 +1,6 @@
 [package]
 name = "br-ui"
-description = "BR's window: the simple, CapCut-style photo editor (Einfach) with LightCraft's full interface one click away (Pro)"
+description = "BR's window: pages like DaVinci Resolve (video with FilmCraft, photos with LightCraft), each complete, with CapCut-style quick tools"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,10 +13,25 @@ lightcraft-ui-egui = { workspace = true }
 lightcraft-raster = { workspace = true }
 lightcraft-codecs = { workspace = true }
 egui = { workspace = true }
-eframe = { workspace = true, features = ["default_fonts", "wgpu", "glow", "accesskit", "wayland", "x11"] }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11"] }
 rfd = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
+br-video = { workspace = true }
+filmcraft-engine = { workspace = true }
+filmcraft-ui-egui = { workspace = true }
+filmcraft-export = { workspace = true }
+filmcraft-gpu = { workspace = true }
+filmcraft-platform = { workspace = true }
+filmcraft-project = { workspace = true }
+filmcraft-render = { workspace = true }
+filmcraft-time = { workspace = true }
+cpal = { workspace = true, optional = true }
+arboard = { workspace = true }
+
+[features]
+# sound for video playback through the system's audio device (cpal: ALSA on Linux)
+audio = ["dep:cpal"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { workspace = true }

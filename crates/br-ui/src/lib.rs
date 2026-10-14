@@ -4,52 +4,87 @@
 //! header carries the page switcher and the page's quick tools (CapCut-style one-click results).
 //! Nothing is hidden behind a mode: every tool of the app under a page is on that page.
 //!
+//! - **Medien, Schnitt, Farbe, Ton, Ausgabe**: FilmCraft's complete editor ([`video`]), arranged
+//!   per page; its menu bar is in BR's header.
 //! - **Foto**: LightCraft's complete interface ([`LightcraftApp`]), with BR's quick tools
 //!   ([`photo`]: looks with strength, social formats, export presets) in the header.
 //!
-//! There is one [`lightcraft_engine::Session`], owned by the `LightcraftApp`. LightCraft's
-//! `logic()` runs every frame on every page (it renders, imports, saves); on other pages its
-//! keyboard shortcuts are hidden from it so they don't act behind the page's back.
+//! There is one photo session (LightCraft's, owned by the `LightcraftApp`) and one video session
+//! (FilmCraft's, owned by the `FilmcraftApp`). Both apps' `logic()` runs every frame on every
+//! page (rendering, importing, saving go on); only the app on the page gets keyboard shortcuts.
 
 pub mod desktop;
 pub mod headless;
 pub mod photo;
 mod style;
+pub mod video;
 
 use std::collections::HashMap;
 use std::time::Duration;
 
+use filmcraft_ui_egui::FilmcraftApp;
 use lightcraft_engine::Session;
 use lightcraft_ui_egui::{LightcraftApp, Services};
 
 pub use photo::{PhotoState, Popover};
+pub use video::VideoState;
 
-/// A page of the window.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A page of the window, in DaVinci Resolve's order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Page {
+    /// Media: browse, import, organise (FilmCraft's Import mode).
+    Medien,
+    /// Editing: the timeline in CapCut's arrangement (FilmCraft).
+    Schnitt,
+    /// Colour grading: Lumetri and scopes (FilmCraft).
+    Farbe,
+    /// Sound: mixer, Essential Sound (FilmCraft).
+    Ton,
+    /// Deliver: FilmCraft's Export mode.
+    Ausgabe,
     /// Photos: LightCraft.
     Foto,
 }
 
 impl Page {
-    pub const ALL: [Page; 1] = [Page::Foto];
+    pub const ALL: [Page; 6] = [Page::Medien, Page::Schnitt, Page::Farbe, Page::Ton, Page::Ausgabe, Page::Foto];
 
     pub fn label(self) -> &'static str {
         match self {
+            Page::Medien => "Medien",
+            Page::Schnitt => "Schnitt",
+            Page::Farbe => "Farbe",
+            Page::Ton => "Ton",
+            Page::Ausgabe => "Ausgabe",
             Page::Foto => "Foto",
         }
     }
 
     pub fn key(self) -> &'static str {
         match self {
+            Page::Medien => "medien",
+            Page::Schnitt => "schnitt",
+            Page::Farbe => "farbe",
+            Page::Ton => "ton",
+            Page::Ausgabe => "ausgabe",
             Page::Foto => "foto",
         }
     }
 
     pub fn hint(self) -> &'static str {
         match self {
+            Page::Medien => "Medien sichten, importieren und ordnen",
+            Page::Schnitt => "Schneiden: Timeline, Vorschau, Eigenschaften, Texte, Effekte",
+            Page::Farbe => "Farbkorrektur und Looks mit Scopes (Lumetri)",
+            Page::Ton => "Mischpult, Pegel, Sprache, Musik und Effekte",
+            Page::Ausgabe => "Exportieren: Formate, Vorlagen, Warteschlange",
             Page::Foto => "Fotos: Bibliothek, Entwickeln, Masken, Kurven, Looks (LightCraft)",
         }
+    }
+
+    /// A page FilmCraft draws.
+    pub fn is_video(self) -> bool {
+        self != Page::Foto
     }
 }
 
@@ -62,9 +97,15 @@ const HEADER_H: f32 = 40.0;
 pub struct BrApp {
     /// LightCraft's interface, owner of the one photo session.
     pub lc: LightcraftApp,
+    /// FilmCraft's interface, owner of the one video session.
+    pub fc: FilmcraftApp,
     pub page: Page,
     /// The Foto page's quick tools.
     pub photo: PhotoState,
+    /// The video pages' layouts.
+    pub video: VideoState,
+    /// Every font family the apps draw with was bound at the start of this frame.
+    fonts_ok: bool,
     /// Screen rectangles of BR's controls from the last frame, by name (`page.foto`,
     /// `tool.looks`, `format.9:16`, `look.lc.moody`, …), for tests and automation.
     pub widgets: HashMap<String, egui::Rect>,
@@ -89,20 +130,44 @@ fn is_shortcut_event(e: &egui::Event) -> bool {
     matches!(e, egui::Event::Key { .. } | egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_))
 }
 
+/// Run `f` with the frame's keyboard shortcuts hidden (for an app that is not on the page).
+fn without_shortcuts(ctx: &egui::Context, f: impl FnOnce(&egui::Context)) {
+    let saved = ctx.input_mut(|i| {
+        let saved = i.events.clone();
+        i.events.retain(|e| !is_shortcut_event(e));
+        saved
+    });
+    f(ctx);
+    ctx.input_mut(|i| i.events = saved);
+}
+
 impl BrApp {
-    /// BR on `session`, without file dialogs (headless runs and tests). `library` names where it
-    /// lives (`None` for an in-memory session).
+    /// BR on the photo `session` and an empty video project, without file dialogs (headless runs
+    /// and tests). `library` names where the photos live (`None` for an in-memory session).
     pub fn new(session: Session, library: Option<String>) -> Self {
         Self::with_services(session, library, base_services())
     }
 
-    /// BR on `session` with `services` (a window: [`desktop::services`]).
+    /// BR on the photo `session` with `services` (a window: [`desktop::services`]) and an empty
+    /// video project.
     pub fn with_services(session: Session, library: Option<String>, services: Services) -> Self {
         let mut lc = LightcraftApp::new(session, services);
         lc.ui.language = lightcraft_ui_egui::i18n::Locale::De;
         // BR shows its own title; this keeps LightCraft from replacing it with "LightCraft — …"
         lc.shown_library = Some(lc.session.library_generation());
-        Self { lc, page: Page::Foto, photo: PhotoState::default(), widgets: HashMap::new(), library }
+        let fc = video::new_app(br_video::Session::default());
+        let mut app = Self {
+            lc,
+            fc,
+            page: Page::Schnitt,
+            photo: PhotoState::default(),
+            video: VideoState::default(),
+            fonts_ok: false,
+            widgets: HashMap::new(),
+            library,
+        };
+        video::show_page(&mut app.fc, &mut app.video, Page::Schnitt);
+        app
     }
 
     /// Show a library that could not be opened (the session is then in memory). `pending_import`
@@ -115,35 +180,47 @@ impl BrApp {
 
     /// Show `page`.
     pub fn open(&mut self, page: Page) {
-        if page != self.page {
-            photo::finish_drags(self);
-            self.photo.open = None;
-            self.page = page;
+        if page == self.page {
+            return;
         }
+        photo::finish_drags(self);
+        self.photo.open = None;
+        if page.is_video() {
+            video::show_page(&mut self.fc, &mut self.video, page);
+        } else {
+            video::leave(&mut self.fc);
+        }
+        self.page = page;
     }
 
-    /// Per frame, before `ui`: LightCraft's background work (renders, imports, saving, control
-    /// requests). On other pages its keyboard shortcuts are hidden from it.
+    /// Per frame, before `ui`: both apps' background work (renders, imports, saving, control
+    /// requests). Only the app on the page sees keyboard shortcuts.
     pub fn logic(&mut self, ctx: &egui::Context) {
         if self.page == Page::Foto {
             self.lc.logic(ctx);
         } else {
-            let saved = ctx.input_mut(|i| {
-                let saved = i.events.clone();
-                i.events.retain(|e| !is_shortcut_event(e));
-                saved
-            });
-            self.lc.logic(ctx);
-            ctx.input_mut(|i| i.events = saved);
+            without_shortcuts(ctx, |ctx| self.lc.logic(ctx));
         }
+        video::logic(&mut self.fc, &mut self.video, ctx);
+        self.fonts_ok = video::fonts_ready(ctx);
         self.lc.shown_library = Some(self.lc.session.library_generation());
         // LightCraft can open another library (Try Again, Open Library…)
         self.library = self.lc.session.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.to_string_lossy().into_owned());
+        // closing the window: a question an app asks (save the project? stop the export?) is
+        // shown on its page
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if self.fc.dialog.is_some() && !self.page.is_video() {
+                self.open(Page::Schnitt);
+            } else if self.lc.ui.dialog.is_some() && self.page.is_video() {
+                self.open(Page::Foto);
+            }
+        }
     }
 
-    /// Before each frame: input LightCraft's control channel injects.
-    pub fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
+    /// Before each frame: input the apps' control channels inject.
+    pub fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         self.lc.raw_input_hook(raw);
+        video::raw_input_hook(&mut self.fc, ctx, raw);
     }
 
     /// Draw the window.
@@ -158,6 +235,11 @@ impl BrApp {
                 self.lc.ui(ui);
                 photo::show(self, &ctx);
             }
+            _ if !self.fonts_ok => {
+                // the fonts were just completed: FilmCraft draws from the next frame on
+                egui::CentralPanel::default().show(ui, |_| {});
+            }
+            _ => video::ui(&mut self.fc, &mut self.video, ui),
         }
     }
 
@@ -174,10 +256,14 @@ impl BrApp {
                     if let Some(page) = style::page_tabs(ui, &t, self.page, &mut self.widgets) {
                         self.open(page);
                     }
+                    if self.page.is_video() && self.fonts_ok {
+                        ui.add_space(10.0);
+                        video::menu_bar(&mut self.fc, ui);
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 8.0;
-                        match self.page {
-                            Page::Foto => photo::header_tools(self, ui, &t),
+                        if self.page == Page::Foto {
+                            photo::header_tools(self, ui, &t);
                         }
                         if let Some(lib) = &self.library {
                             ui.add_space(6.0);
@@ -196,9 +282,12 @@ impl BrApp {
     }
 
     /// Everything closing the window does short of stopping LightCraft's workers: end a drag,
-    /// let a running export finish (unless it was cancelled), save and close the library.
+    /// let a running export finish (unless it was cancelled), save and close the library, flush
+    /// the video project's recovery journal.
     pub fn close(&mut self) {
         photo::finish_drags(self);
+        video::leave(&mut self.fc);
+        video::on_exit(&mut self.fc);
         // an export still running gets written, unless Quit Anyway (or ✕) cancelled it
         photo::wait_for_export(self, Duration::from_secs(120));
         if let Err(e) = self.lc.session.close_library() {
@@ -222,8 +311,8 @@ impl eframe::App for BrApp {
         BrApp::logic(self, ctx);
     }
 
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
-        BrApp::raw_input_hook(self, raw);
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        BrApp::raw_input_hook(self, ctx, raw);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -233,7 +322,7 @@ impl eframe::App for BrApp {
         }
     }
 
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+    fn on_exit(&mut self) {
         BrApp::on_exit(self);
         // macOS (as LightCraft, its issue #1331): end the process before eframe tears the window
         // down, or AppKit's teardown ends in a crash report. Everything is saved at this point.

@@ -18,15 +18,18 @@ use lightcraft_ui_egui::UiState;
 use serde_json::{Value, json};
 
 const USAGE: &str = "\
-BR — eine Media-Suite: DaVinci-Umfang, so direkt bedienbar wie CapCut. Seiten: Foto (LightCraft).
+BR — eine Media-Suite: DaVinci-Umfang, so direkt bedienbar wie CapCut. Seiten: Medien, Schnitt,
+Farbe, Ton, Ausgabe (Video, FilmCraft) und Foto (LightCraft).
 
 USAGE
   br [--library DIR | --demo] [FILES…]
-      Open the window. FILES (photos or folders) are imported. The library is DIR, else
+      Open the window on the Schnitt page. FILES (photos or folders) are imported into the photo
+      library and the window opens on the Foto page. The library is DIR, else
       $BR_LIBRARY, else the library last opened in the window, else ~/Pictures/BR Library;
       --demo opens LightCraft's demo photos in memory and saves nothing.
-      BR_RENDERER=glow or =wgpu picks the window renderer; BR_WAYLAND=1 keeps native Wayland
-      (by default BR uses X11 where it can, which is what makes dropping files work).
+      BR_RENDERER=gl draws the window with OpenGL (drivers without Vulkan, software rendering),
+      =wgpu with the GPU's own API; BR_WAYLAND=1 keeps native Wayland (by default BR uses X11
+      where it can, which is what makes dropping files work).
       BR_IMPORT_DIR is the folder the import dialog opens in (see deploy/browser for a BR
       on a server, used in the browser).
       The window keeps LightCraft's settings in BR's settings folder (Linux: ~/.config/BR) and
@@ -52,9 +55,10 @@ USAGE
 
   br commands         BR's commands and their parameters
   br looks [--json]   the looks
-  br snapshot [--library DIR | --demo] [--popover looks|format|export]
+  br snapshot [--library DIR | --demo] [--page PAGE] [--popover looks|format|export]
               [-o OUT.png] [--size WxH] [--scale S] [FILES…]
-      Draw the window without a display (no GPU needed) into a PNG.
+      Draw the window without a display (no GPU needed) into a PNG. PAGE: medien, schnitt
+      (default), farbe, ton, ausgabe, foto (default with FILES or --popover, the Foto tools).
 
   Logging goes to standard error (and the window's log file), never to standard output:
   warnings, and information from BR and LightCraft. BR_LOG=debug|info|warn sets the level of
@@ -195,9 +199,18 @@ fn import_and_select(s: &mut Session, paths: &[String]) -> Result<Value, String>
     Ok(r)
 }
 
-/// Window options for `renderer`. wgpu gets LightCraft's window backends (Vulkan, Metal or DX12,
-/// plus OpenGL where LightCraft uses it).
-fn native_options(renderer: eframe::Renderer) -> eframe::NativeOptions {
+/// How the window draws: wgpu on the system's GPU API (Vulkan, Metal or DX12, plus OpenGL where
+/// LightCraft uses it), or wgpu on OpenGL only (`BR_RENDERER=gl`: drivers without Vulkan, Mesa's
+/// software rendering on a server). There is no separate OpenGL renderer: FilmCraft is built
+/// for eframe's wgpu renderer alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Renderer {
+    Wgpu,
+    Gl,
+}
+
+/// Window options for `renderer`.
+fn native_options(renderer: Renderer) -> eframe::NativeOptions {
     let mut o = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(br_ui::TITLE)
@@ -205,12 +218,15 @@ fn native_options(renderer: eframe::Renderer) -> eframe::NativeOptions {
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([1000.0, 640.0])
             .with_drag_and_drop(true),
-        renderer,
+        renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(n) = &mut o.wgpu_options.wgpu_setup {
         use lightcraft_engine::gpu::backend;
-        n.instance_descriptor.backends = backend::window_backends();
+        n.instance_descriptor.backends = match renderer {
+            Renderer::Wgpu => backend::window_backends(),
+            Renderer::Gl => eframe::wgpu::Backends::GL,
+        };
         n.instance_descriptor.backend_options = backend::backend_options();
         n.instance_descriptor.flags = backend::instance_flags_from_env(n.instance_descriptor.flags);
     }
@@ -248,12 +264,12 @@ impl eframe::App for Window {
         eframe::App::ui(&mut self.0, ui, frame);
     }
 
-    fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+    fn on_exit(&mut self) {
         // first: BR's own exit ends the process on macOS
         if let Err(e) = self.1.save(&self.0.lc) {
             log::error!("{e}");
         }
-        eframe::App::on_exit(&mut self.0, gl);
+        eframe::App::on_exit(&mut self.0);
     }
 }
 
@@ -303,9 +319,10 @@ fn window(args: &[String], logger: Option<&'static logging::AppLogger>) -> Resul
     let files = expand_paths(&opts.files);
     let forced = std::env::var("BR_RENDERER").ok().map(|r| r.to_lowercase());
     let renderer = match forced.as_deref() {
-        Some("glow" | "gl" | "opengl") => eframe::Renderer::Glow,
-        Some("wgpu") | None => eframe::Renderer::Wgpu,
-        Some(other) => return Err(format!("BR_RENDERER={other}: use glow or wgpu")),
+        // `glow` was the separate OpenGL renderer of earlier versions: it now means OpenGL too
+        Some("gl" | "glow" | "opengl") => Renderer::Gl,
+        Some("wgpu") | None => Renderer::Wgpu,
+        Some(other) => return Err(format!("BR_RENDERER={other}: use gl or wgpu")),
     };
     // the log file, once the arguments are fine: a usage error leaves none behind
     let log_file = logger.and_then(|l| open_log(l, opts.demo));
@@ -315,6 +332,9 @@ fn window(args: &[String], logger: Option<&'static logging::AppLogger>) -> Resul
     if let Some(logger) = logger {
         logging::record_panics(logger);
     }
+    // the video side: hardware decoders, GPU exports (not after a fallback from wgpu: the driver
+    // that failed is not loaded again), FilmCraft's crash log (chained after the hook above)
+    br_ui::desktop::film::register_process(log_file.as_deref().and_then(|f| f.parent()).map(Path::to_path_buf), renderer == Renderer::Wgpu);
     // LightCraft's settings from the last run, read with --demo too (so it looks like the user's
     // BR) but never written then
     let demo = opts.demo;
@@ -343,6 +363,8 @@ fn window(args: &[String], logger: Option<&'static logging::AppLogger>) -> Resul
             Box::new(move |cc| {
                 came_up.store(true, std::sync::atomic::Ordering::Relaxed);
                 let mut app = br_ui::BrApp::with_services(session, lib, br_ui::desktop::services(cc, log_file.as_deref()));
+                // FilmCraft in the window: dialogs, the GPU, sound, auto-save (not with --demo)
+                br_ui::desktop::film::attach(&mut app.fc, cc, if demo { None } else { br_ui::desktop::video_dir() });
                 // the settings from the last run replace BR's defaults (German, for one)
                 if let Some(ui) = saved {
                     app.lc.ui = ui;
@@ -354,8 +376,12 @@ fn window(args: &[String], logger: Option<&'static logging::AppLogger>) -> Resul
                 let writer = prefs::PrefsWriter::new(prefs_path.filter(|_| !demo), &app.lc.ui, keep_prefs_file);
                 match problem {
                     // the photos are imported once the user decides what to do about the library
-                    Some((dir, e)) => app.library_problem(dir, e, files),
+                    Some((dir, e)) => {
+                        app.open(br_ui::Page::Foto);
+                        app.library_problem(dir, e, files);
+                    }
                     None if !files.is_empty() => {
+                        app.open(br_ui::Page::Foto);
                         if let Err(e) = lightcraft_ui_egui::import::start_paths(&mut app.lc, files) {
                             log::error!("import: {e}");
                         }
@@ -377,14 +403,14 @@ fn window(args: &[String], logger: Option<&'static logging::AppLogger>) -> Resul
         Ok(Err(e)) => e.to_string(),
         Err(p) => format!("the renderer crashed: {}", panic_text(&*p)),
     };
-    if forced.is_some() || renderer != eframe::Renderer::Wgpu {
-        return Err(format!("could not open the window: {failure} (try BR_RENDERER=glow or BR_RENDERER=wgpu)"));
+    if forced.is_some() || renderer != Renderer::Wgpu {
+        return Err(format!("could not open the window: {failure} (try BR_RENDERER=gl or BR_RENDERER=wgpu)"));
     }
     // a failed or crashed wgpu start can leave the event loop unusable: start again with OpenGL
     log::warn!("the window could not start with wgpu ({failure}); starting again with OpenGL");
     let exe = std::env::current_exe().map_err(|e| format!("could not open the window: {failure}; and not restart: {e}"))?;
     let mut again = std::process::Command::new(exe);
-    again.args(std::env::args_os().skip(1)).env("BR_RENDERER", "glow");
+    again.args(std::env::args_os().skip(1)).env("BR_RENDERER", "gl");
     // on Unix the new start takes this process's place (same pid: whoever started BR can stop it)
     #[cfg(unix)]
     {
@@ -619,6 +645,7 @@ fn snapshot(args: &[String]) -> Result<(), String> {
     let mut size = [1440.0f32, 900.0];
     let mut scale = 1.0f32;
     let mut popover = None;
+    let mut page = None;
     let rest = library_opts(args, &mut opts)?;
     let mut it = rest.iter();
     while let Some(a) = it.next() {
@@ -627,6 +654,11 @@ fn snapshot(args: &[String]) -> Result<(), String> {
             "--popover" => {
                 let v = it.next().ok_or("--popover needs a tool")?;
                 popover = Some(br_ui::Popover::ALL.into_iter().find(|p| p.key() == v).ok_or(format!("unknown tool `{v}`: looks, format or export"))?);
+            }
+            "--page" => {
+                let v = it.next().ok_or("--page needs a page")?;
+                let keys = br_ui::Page::ALL.map(br_ui::Page::key).join(", ");
+                page = Some(br_ui::Page::ALL.into_iter().find(|p| p.key() == v).ok_or(format!("unknown page `{v}`: {keys}"))?);
             }
             "--size" => {
                 let v = it.next().ok_or("--size needs WxH")?;
@@ -651,6 +683,14 @@ fn snapshot(args: &[String]) -> Result<(), String> {
     app.lc.ui.settings.gpu = false;
     if !opts.files.is_empty() {
         import_and_select(&mut app.lc.session, &opts.files)?;
+    }
+    // the photo tools are on the Foto page, and so are photos given here
+    let photos = popover.is_some() || !opts.files.is_empty();
+    match page {
+        Some(p) if popover.is_some() && p != br_ui::Page::Foto => return Err("--popover is a tool of the foto page".into()),
+        Some(p) => app.open(p),
+        None if photos => app.open(br_ui::Page::Foto),
+        None => {}
     }
     let mut d = br_ui::headless::Driver::new(size, scale);
     d.settle(&mut app, Duration::from_secs(120));

@@ -16,6 +16,8 @@ fn app() -> (BrApp, Driver) {
     app.lc.ui.settings.gpu = false;
     let mut d = Driver::new([1400.0, 860.0], 1.0);
     assert!(d.settle(&mut app, SETTLE), "the first frames settle");
+    app.open(Page::Foto);
+    assert!(d.settle(&mut app, SETTLE));
     if app.lc.session.active().is_none() {
         let first = app.lc.session.visible_cloned()[0];
         app.lc.session.execute("library.select", &serde_json::json!({"ids": [first.0], "active": first.0})).unwrap();
@@ -234,4 +236,90 @@ fn the_photo_page_says_when_nothing_is_saved_and_another_library_can_be_chosen()
     assert_eq!(app.library.as_deref(), Some(lib.to_string_lossy().as_ref()));
     app.close();
     let _ = std::fs::remove_dir_all(&lib);
+}
+
+/// A BR on the video side: FilmCraft's empty project, the photo demo beside it.
+fn video_app() -> (BrApp, Driver) {
+    lightcraft_engine::gpu::set_enabled(false);
+    let mut app = BrApp::new(br_photo::library::demo_session(), None);
+    app.lc.ui.settings.gpu = false;
+    let mut d = Driver::new([1400.0, 860.0], 1.0);
+    assert!(d.settle(&mut app, SETTLE), "the first frames settle");
+    (app, d)
+}
+
+#[test]
+fn the_window_opens_on_the_schnitt_page_with_filmcrafts_menu_in_the_header() {
+    let (app, d) = video_app();
+    assert_eq!(app.page, Page::Schnitt);
+    let texts = d.texts();
+    for page in Page::ALL {
+        assert!(app.widgets.contains_key(&format!("page.{}", page.key())), "{page:?}");
+        assert!(texts.iter().any(|t| t == page.label()), "page `{}` missing: {texts:?}", page.label());
+    }
+    // FilmCraft's menu bar (German where FilmCraft has German) and its panels
+    assert!(texts.iter().any(|t| t == "Datei" || t == "File"), "FilmCraft's menu: {texts:?}");
+    assert!(app.fc.ui_error.is_none(), "{:?}", app.fc.ui_error);
+    snapshot(&d, "schnitt");
+}
+
+#[test]
+fn every_page_draws_and_switching_back_and_forth_is_safe() {
+    let (mut app, mut d) = video_app();
+    for round in 0..4 {
+        for page in Page::ALL {
+            d.click(&mut app, &format!("page.{}", page.key())).unwrap();
+            assert!(d.settle(&mut app, SETTLE), "{page:?} settles");
+            assert_eq!(app.page, page);
+            assert!(app.fc.ui_error.is_none(), "round {round}, {page:?}: {:?}", app.fc.ui_error);
+            if round == 0 {
+                snapshot(&d, &format!("page-{}", page.key()));
+            }
+        }
+    }
+    // the fonts the two apps install for the window are complete
+    let families = d.view.ctx.fonts(|f| f.families());
+    for name in ["semibold", "medium"] {
+        assert!(families.contains(&egui::FontFamily::Name(name.into())), "{name}: {families:?}");
+    }
+}
+
+#[test]
+fn shortcuts_go_to_the_app_on_the_page() {
+    let (mut app, mut d) = video_app();
+    let photo = app.lc.session.visible_cloned()[0];
+    app.lc.session.execute("library.select", &serde_json::json!({"ids": [photo.0], "active": photo.0})).unwrap();
+    let rating = app.lc.session.catalog.photo(photo).unwrap().rating;
+    // on the Schnitt page, 3 is not LightCraft's rating shortcut
+    d.key(&mut app, egui::Key::Num3, egui::Modifiers::NONE);
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(app.lc.session.catalog.photo(photo).unwrap().rating, rating);
+    // on the Foto page it is
+    app.open(Page::Foto);
+    assert!(d.settle(&mut app, SETTLE));
+    d.key(&mut app, egui::Key::Num3, egui::Modifiers::NONE);
+    assert!(d.settle(&mut app, SETTLE));
+    assert_eq!(app.lc.session.catalog.photo(photo).unwrap().rating, 3);
+}
+
+#[test]
+fn a_page_keeps_the_layout_it_was_left_with() {
+    let (mut app, mut d) = video_app();
+    let mine = br_ui::video::schnitt_layout();
+    let filmcraft_ui_egui::dock::DockNode::Split { a, .. } = mine.clone() else { panic!("a split") };
+    // the user changes the Schnitt page's layout (here: just its top half)
+    app.fc.ui.dock = *a;
+    let changed = app.fc.ui.dock.clone();
+    d.click(&mut app, "page.farbe").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    let panels = |n: &filmcraft_ui_egui::dock::DockNode| {
+        let mut v = Vec::new();
+        n.panels(&mut v);
+        v
+    };
+    assert_ne!(panels(&app.fc.ui.dock), panels(&changed), "Farbe has its own layout");
+    d.click(&mut app, "page.schnitt").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    // the same panels in the same places (FilmCraft may bring another tab of a group to the front)
+    assert_eq!(panels(&app.fc.ui.dock), panels(&changed), "Schnitt got its changed layout back");
 }
