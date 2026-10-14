@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "br": {
+      "command": "cargo",
+      "args": ["run", "--quiet", "--release", "-p", "br", "--", "mcp", "--demo"]
+    }
+  }
+}

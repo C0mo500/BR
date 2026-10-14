@@ -643,6 +643,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "br"
+version = "0.1.0"
+dependencies = [
+ "br-mcp",
+ "br-photo",
+ "br-ui",
+ "eframe",
+ "egui",
+ "lightcraft-engine",
+ "lightcraft-mcp",
+ "lightcraft-ui-egui",
+ "log",
+ "serde_json",
+]
+
+[[package]]
 name = "br-mcp"
 version = "0.1.0"
 dependencies = [
