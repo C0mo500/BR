@@ -1,58 +1,74 @@
 //! BR's window.
 //!
-//! [`BrApp`] hosts LightCraft's complete interface ([`LightcraftApp`]) and shows one of two modes:
+//! One window with pages, as in DaVinci Resolve; each page is a complete Craft app, and BR's
+//! header carries the page switcher and the page's quick tools (CapCut-style one-click results).
+//! Nothing is hidden behind a mode: every tool of the app under a page is on that page.
 //!
-//! - **Einfach** (Simple, [`simple`]): BR's own CapCut-style editor. A big preview, a filmstrip,
-//!   and four tabs: Looks, Anpassen (six sliders and Auto), Format (1:1, 4:5, 9:16, 16:9) and
-//!   Export (Instagram, Story, …).
-//! - **Pro**: LightCraft's Lightroom-style interface on the same library and the same photo.
+//! - **Foto**: LightCraft's complete interface ([`LightcraftApp`]), with BR's quick tools
+//!   ([`photo`]: looks with strength, social formats, export presets) in the header.
 //!
 //! There is one [`lightcraft_engine::Session`], owned by the `LightcraftApp`. LightCraft's
-//! `logic()` runs every frame in both modes (it renders, imports, saves and keeps the Pro view
-//! ready); in Simple mode its keyboard shortcuts are hidden from it so they don't act behind BR's
-//! back. Everything that only LightCraft's `ui()` would do (export polling, notices, the quit
-//! prompt) is done by BR in Simple mode.
+//! `logic()` runs every frame on every page (it renders, imports, saves); on other pages its
+//! keyboard shortcuts are hidden from it so they don't act behind the page's back.
 
 pub mod desktop;
 pub mod headless;
-pub mod simple;
+pub mod photo;
 mod style;
 
 use std::collections::HashMap;
 use std::time::Duration;
 
 use lightcraft_engine::Session;
-use lightcraft_ui_egui::docking::Panel as DockPanel;
-use lightcraft_ui_egui::state::{RightPanel, ViewMode};
 use lightcraft_ui_egui::{LightcraftApp, Services};
-use serde_json::json;
 
-pub use simple::{SimpleState, Tab};
+pub use photo::{PhotoState, Popover};
 
-/// Which interface the window shows.
+/// A page of the window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mode {
-    /// BR's simple editor.
-    Simple,
-    /// LightCraft's full interface.
-    Pro,
+pub enum Page {
+    /// Photos: LightCraft.
+    Foto,
+}
+
+impl Page {
+    pub const ALL: [Page; 1] = [Page::Foto];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Page::Foto => "Foto",
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Page::Foto => "foto",
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            Page::Foto => "Fotos: Bibliothek, Entwickeln, Masken, Kurven, Looks (LightCraft)",
+        }
+    }
 }
 
 /// Window title.
 pub const TITLE: &str = "BR";
 
-/// Height of BR's top bar in Pro mode (in Simple mode the bar is taller and carries the tools).
-const PRO_BAR_H: f32 = 30.0;
+/// Height of BR's header.
+const HEADER_H: f32 = 40.0;
 
 pub struct BrApp {
-    /// LightCraft's interface, owner of the one session.
+    /// LightCraft's interface, owner of the one photo session.
     pub lc: LightcraftApp,
-    pub mode: Mode,
-    pub simple: SimpleState,
-    /// Screen rectangles of BR's controls from the last frame, by name (`tab.looks`,
-    /// `format.9:16`, `look.lc.moody`, `mode.pro`, …), for tests and automation.
+    pub page: Page,
+    /// The Foto page's quick tools.
+    pub photo: PhotoState,
+    /// Screen rectangles of BR's controls from the last frame, by name (`page.foto`,
+    /// `tool.looks`, `format.9:16`, `look.lc.moody`, …), for tests and automation.
     pub widgets: HashMap<String, egui::Rect>,
-    /// Where the library is, for the title bar and messages (`None`: in memory).
+    /// Where the library is, for the header and messages (`None`: in memory).
     pub library: Option<String>,
 }
 
@@ -86,7 +102,7 @@ impl BrApp {
         lc.ui.language = lightcraft_ui_egui::i18n::Locale::De;
         // BR shows its own title; this keeps LightCraft from replacing it with "LightCraft — …"
         lc.shown_library = Some(lc.session.library_generation());
-        Self { lc, mode: Mode::Simple, simple: SimpleState::default(), widgets: HashMap::new(), library }
+        Self { lc, page: Page::Foto, photo: PhotoState::default(), widgets: HashMap::new(), library }
     }
 
     /// Show a library that could not be opened (the session is then in memory). `pending_import`
@@ -97,33 +113,21 @@ impl BrApp {
         self.lc.library_problem = Some(p);
     }
 
-    /// Switch to Pro mode on the active photo: LightCraft's detail view with its Edit panel.
-    pub fn open_pro(&mut self) {
-        // a slider or look drag in progress becomes its undo step before LightCraft takes over
-        simple::finish_drags(self);
-        let edit_shown = self.lc.ui.docking.as_ref().is_none_or(|w| w.exposed(DockPanel::Tools));
-        if !(self.lc.ui.right == RightPanel::Edit && edit_shown) {
-            // `panel.edit` toggles: only call it when the Edit panel is not already showing
-            if let Err(e) = self.lc.run("panel.edit", json!({})) {
-                log::warn!("panel.edit: {e}");
-            }
+    /// Show `page`.
+    pub fn open(&mut self, page: Page) {
+        if page != self.page {
+            photo::finish_drags(self);
+            self.photo.open = None;
+            self.page = page;
         }
-        self.lc.ui.view = ViewMode::Detail;
-        self.mode = Mode::Pro;
-    }
-
-    /// Back to Simple mode.
-    pub fn open_simple(&mut self) {
-        if let Err(e) = br_photo::adjust::end(&mut self.lc.session) {
-            log::warn!("ending an edit: {e}");
-        }
-        self.mode = Mode::Simple;
     }
 
     /// Per frame, before `ui`: LightCraft's background work (renders, imports, saving, control
-    /// requests). In Simple mode its keyboard shortcuts are hidden from it.
+    /// requests). On other pages its keyboard shortcuts are hidden from it.
     pub fn logic(&mut self, ctx: &egui::Context) {
-        if self.mode == Mode::Simple {
+        if self.page == Page::Foto {
+            self.lc.logic(ctx);
+        } else {
             let saved = ctx.input_mut(|i| {
                 let saved = i.events.clone();
                 i.events.retain(|e| !is_shortcut_event(e));
@@ -131,11 +135,9 @@ impl BrApp {
             });
             self.lc.logic(ctx);
             ctx.input_mut(|i| i.events = saved);
-        } else {
-            self.lc.logic(ctx);
         }
         self.lc.shown_library = Some(self.lc.session.library_generation());
-        // Pro mode can open another library (Try Again, Open Library…)
+        // LightCraft can open another library (Try Again, Open Library…)
         self.library = self.lc.session.library.as_ref().filter(|l| l.on_disk).map(|l| l.dir.to_string_lossy().into_owned());
     }
 
@@ -147,65 +149,58 @@ impl BrApp {
     /// Draw the window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         self.widgets.clear();
-        // a Simple-mode export finishes whichever mode is showing
-        simple::poll_export(self, ui.ctx());
-        match self.mode {
-            Mode::Pro => {
-                let t = style::Theme::get(ui.ctx());
-                let mut go_simple = false;
-                egui::Panel::top("br_pro_bar")
-                    .exact_size(PRO_BAR_H)
-                    .frame(egui::Frame::NONE.fill(t.bar).inner_margin(egui::Margin::symmetric(10, 0)))
-                    .show(ui, |ui| {
-                        ui.horizontal_centered(|ui| {
-                            style::brand(ui, &t);
-                            ui.add_space(12.0);
-                            go_simple = style::mode_switch(ui, &t, Mode::Pro, &mut self.widgets) == Some(Mode::Simple);
-                        });
-                    });
+        let ctx = ui.ctx().clone();
+        // an export finishes whichever page is showing
+        photo::poll_export(self, &ctx);
+        self.header(ui);
+        match self.page {
+            Page::Foto => {
                 self.lc.ui(ui);
-                if go_simple {
-                    self.open_simple();
-                }
-            }
-            Mode::Simple => {
-                simple::show(self, ui);
-                self.simple_duties(ui.ctx());
+                photo::show(self, &ctx);
             }
         }
     }
 
-    /// What LightCraft's `ui()` does that Simple mode still needs.
-    fn simple_duties(&mut self, ctx: &egui::Context) {
-        use lightcraft_ui_egui::panels;
-        panels::notices::show(&mut self.lc, ctx);
-        panels::library_problem::show(&mut self.lc, ctx);
-        // answers of LightCraft's file dialogs (Choose Another Library… in the window above)
-        lightcraft_ui_egui::pick::poll(&mut self.lc, ctx);
-        lightcraft_ui_egui::export_task::poll(&mut self.lc, ctx);
-        lightcraft_ui_egui::export_task::poll_photos(&mut self.lc, ctx);
-        // LightCraft's dialogs (a dropped preset file, a confirmation) over BR's interface
-        panels::dialogs::show(&mut self.lc, ctx);
-        panels::toast(&mut self.lc, ctx);
-        // LightCraft's own controls drawn in Simple mode (dialogs, the banner), for automation
-        self.lc.widgets = lightcraft_ui_egui::widgets::take_registry(ctx);
-        if std::mem::take(&mut self.lc.ui.quit) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
+    /// BR's header: the wordmark, the pages, the page's quick tools.
+    fn header(&mut self, ui: &mut egui::Ui) {
+        let t = style::Theme::get(ui.ctx());
+        egui::Panel::top("br_header").exact_size(HEADER_H).frame(egui::Frame::NONE.fill(t.bar).inner_margin(egui::Margin::symmetric(12, 0))).show(
+            ui,
+            |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    style::brand(ui, &t);
+                    ui.add_space(14.0);
+                    if let Some(page) = style::page_tabs(ui, &t, self.page, &mut self.widgets) {
+                        self.open(page);
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        match self.page {
+                            Page::Foto => photo::header_tools(self, ui, &t),
+                        }
+                        if let Some(lib) = &self.library {
+                            ui.add_space(6.0);
+                            ui.label(egui::RichText::new(lib).size(11.5).color(t.dim)).on_hover_text("Bibliothek");
+                        }
+                    });
+                });
+            },
+        );
     }
 
     /// Something is still being worked on (renders, an import or export): keep drawing frames.
     pub fn busy(&self) -> bool {
         let lc = &self.lc;
-        lc.renderer.in_flight() > 0 || lc.import.is_some() || lc.export.is_some() || !lc.tasks.is_empty() || self.simple.exporting()
+        lc.renderer.in_flight() > 0 || lc.import.is_some() || lc.export.is_some() || !lc.tasks.is_empty() || self.photo.exporting()
     }
 
     /// Everything closing the window does short of stopping LightCraft's workers: end a drag,
     /// let a running export finish (unless it was cancelled), save and close the library.
     pub fn close(&mut self) {
-        simple::finish_drags(self);
+        photo::finish_drags(self);
         // an export still running gets written, unless Quit Anyway (or ✕) cancelled it
-        simple::wait_for_export(self, Duration::from_secs(120));
+        photo::wait_for_export(self, Duration::from_secs(120));
         if let Err(e) = self.lc.session.close_library() {
             log::error!("closing the library: {e}");
         }

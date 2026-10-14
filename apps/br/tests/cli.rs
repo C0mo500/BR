@@ -40,7 +40,7 @@ fn help_and_version() {
 fn snapshot_then_edit_that_picture_with_br_photo() {
     let dir = temp("photo");
     let shot = dir.join("shot.png");
-    let o = br().args(["snapshot", "--demo", "--tab", "format", "--size", "1000x700", "-o"]).arg(&shot).output().unwrap();
+    let o = br().args(["snapshot", "--demo", "--popover", "format", "--size", "1000x700", "-o"]).arg(&shot).output().unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(std::fs::metadata(&shot).unwrap().len() > 10_000);
 

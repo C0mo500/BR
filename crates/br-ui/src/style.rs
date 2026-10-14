@@ -1,12 +1,12 @@
 //! BR's look: LightCraft's theme colours (so light and dark mode follow its settings) with BR's
-//! accent, and the few widgets the simple editor is built from.
+//! accent, and the widgets of BR's header and quick tools.
 
 use std::collections::HashMap;
 
 use egui::{Color32, CornerRadius, Rect, RichText, Sense, Stroke, StrokeKind, Ui, Vec2};
 use lightcraft_ui_egui::theme::Tokens;
 
-use crate::Mode;
+use crate::Page;
 
 /// BR's accent: selection, primary buttons.
 pub const ACCENT: Color32 = Color32::from_rgb(0x1f, 0xc8, 0xb4);
@@ -47,9 +47,8 @@ impl Theme {
 }
 
 /// "BR" wordmark.
-pub fn brand(ui: &mut Ui, t: &Theme) {
+pub fn brand(ui: &mut Ui, _t: &Theme) {
     ui.label(RichText::new("BR").strong().size(17.0).color(ACCENT));
-    ui.label(RichText::new("Foto").size(14.0).color(t.dim));
 }
 
 /// A rounded button. `primary` fills it with the accent.
@@ -62,41 +61,36 @@ pub fn button(ui: &mut Ui, t: &Theme, text: &str, primary: bool, enabled: bool) 
     ui.add_enabled(enabled, b)
 }
 
-/// The "Einfach | Pro" switch; returns the mode clicked.
-pub fn mode_switch(ui: &mut Ui, t: &Theme, current: Mode, widgets: &mut HashMap<String, Rect>) -> Option<Mode> {
+/// The page switcher; returns the page clicked.
+pub fn page_tabs(ui: &mut Ui, t: &Theme, current: Page, widgets: &mut HashMap<String, Rect>) -> Option<Page> {
     let mut clicked = None;
     egui::Frame::NONE.fill(t.well).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(2)).show(ui, |ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        for (mode, label, name) in [(Mode::Simple, "Einfach", "mode.simple"), (Mode::Pro, "Pro", "mode.pro")] {
-            let on = current == mode;
-            let b = egui::Button::new(RichText::new(label).size(12.5).color(if on { ON_ACCENT } else { t.text }))
+        for page in Page::ALL {
+            let on = current == page;
+            let b = egui::Button::new(RichText::new(page.label()).size(12.5).color(if on { ON_ACCENT } else { t.text }))
                 .fill(if on { ACCENT } else { Color32::TRANSPARENT })
                 .stroke(Stroke::NONE)
                 .corner_radius(CornerRadius::same(6))
-                .min_size(Vec2::new(64.0, 22.0));
-            let r = ui.add(b).on_hover_text(match mode {
-                Mode::Simple => "Einfach bearbeiten: Looks, Regler, Formate, Export",
-                Mode::Pro => "Alle Werkzeuge (LightCraft): Masken, Kurven, Bibliothek, …",
-            });
-            widgets.insert(name.into(), r.rect);
+                .min_size(Vec2::new(64.0, 24.0));
+            let r = ui.add(b).on_hover_text(page.hint());
+            widgets.insert(format!("page.{}", page.key()), r.rect);
             if r.clicked() && !on {
-                clicked = Some(mode);
+                clicked = Some(page);
             }
         }
     });
     clicked
 }
 
-/// A tab in the side panel's tab bar.
-pub fn tab(ui: &mut Ui, t: &Theme, label: &str, on: bool, width: f32) -> egui::Response {
-    let (rect, r) = ui.allocate_exact_size(Vec2::new(width, 34.0), Sense::click());
-    let color = if on || r.hovered() { t.text } else { t.dim };
-    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(13.5), color);
-    if on {
-        let line = Rect::from_min_max(egui::pos2(rect.left() + 10.0, rect.bottom() - 2.5), egui::pos2(rect.right() - 10.0, rect.bottom()));
-        ui.painter().rect_filled(line, CornerRadius::same(1), ACCENT);
-    }
-    r
+/// A header tool button that opens a popover: highlighted while its popover is open.
+pub fn tool_button(ui: &mut Ui, t: &Theme, text: &str, open: bool, enabled: bool) -> egui::Response {
+    let b = egui::Button::new(RichText::new(text).size(13.0).color(if enabled { t.text } else { t.disabled }))
+        .fill(if open { t.hover } else { t.button })
+        .stroke(if open { Stroke::new(1.0, ACCENT) } else { Stroke::NONE })
+        .corner_radius(CornerRadius::same(7))
+        .min_size(Vec2::new(0.0, 28.0));
+    ui.add_enabled(enabled, b)
 }
 
 /// A small grey heading.

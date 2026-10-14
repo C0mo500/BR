@@ -14,7 +14,7 @@ use lightcraft_mcp::{Backend, Headless, expand_paths};
 use serde_json::{Value, json};
 
 const USAGE: &str = "\
-BR — eine Media-Suite. BR Foto: einfache Fotobearbeitung, mit LightCraft als Pro-Modus.
+BR — eine Media-Suite: DaVinci-Umfang, so direkt bedienbar wie CapCut. Seiten: Foto (LightCraft).
 
 USAGE
   br [--library DIR | --demo] [FILES…]
@@ -44,7 +44,7 @@ USAGE
 
   br commands         BR's commands and their parameters
   br looks [--json]   the looks
-  br snapshot [--library DIR | --demo] [--pro] [--tab looks|adjust|format|export]
+  br snapshot [--library DIR | --demo] [--popover looks|format|export]
               [-o OUT.png] [--size WxH] [--scale S] [FILES…]
       Draw the window without a display (no GPU needed) into a PNG.
 ";
@@ -510,17 +510,15 @@ fn snapshot(args: &[String]) -> Result<(), String> {
     let mut out = PathBuf::from("br-snapshot.png");
     let mut size = [1440.0f32, 900.0];
     let mut scale = 1.0f32;
-    let mut pro = false;
-    let mut tab = None;
+    let mut popover = None;
     let rest = library_opts(args, &mut opts)?;
     let mut it = rest.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "-o" | "--out" => out = PathBuf::from(it.next().ok_or("-o needs a file")?),
-            "--pro" => pro = true,
-            "--tab" => {
-                let v = it.next().ok_or("--tab needs a tab")?;
-                tab = Some(br_ui::Tab::ALL.into_iter().find(|t| t.key() == v).ok_or(format!("unknown tab `{v}`: looks, adjust, format or export"))?);
+            "--popover" => {
+                let v = it.next().ok_or("--popover needs a tool")?;
+                popover = Some(br_ui::Popover::ALL.into_iter().find(|p| p.key() == v).ok_or(format!("unknown tool `{v}`: looks, format or export"))?);
             }
             "--size" => {
                 let v = it.next().ok_or("--size needs WxH")?;
@@ -546,13 +544,12 @@ fn snapshot(args: &[String]) -> Result<(), String> {
     if !opts.files.is_empty() {
         import_and_select(&mut app.lc.session, &opts.files)?;
     }
-    if let Some(tab) = tab {
-        app.simple.tab = tab;
-    }
     let mut d = br_ui::headless::Driver::new(size, scale);
     d.settle(&mut app, Duration::from_secs(120));
-    if pro {
-        app.open_pro();
+    if let Some(p) = popover {
+        // open it the way a click does: under its button in the header
+        let button = if p == br_ui::Popover::Export { "export".to_string() } else { format!("tool.{}", p.key()) };
+        d.click(&mut app, &button)?;
         d.settle(&mut app, Duration::from_secs(120));
     }
     let png = br_ui::headless::png(&d.paint());
