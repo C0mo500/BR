@@ -13,6 +13,8 @@
 mod appearance;
 #[cfg(feature = "audio")]
 pub mod audio;
+#[cfg(feature = "audio")]
+pub mod audio_in;
 #[cfg(target_os = "linux")]
 mod colord;
 mod editors;

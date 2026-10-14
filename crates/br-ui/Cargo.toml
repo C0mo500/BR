@@ -19,6 +19,8 @@ serde_json = { workspace = true }
 log = { workspace = true }
 br-video = { workspace = true }
 getrandom = { workspace = true }
+chrono = { workspace = true }
+sys-locale = { workspace = true }
 filmcraft-engine = { workspace = true }
 filmcraft-ui-egui = { workspace = true }
 filmcraft-export = { workspace = true }

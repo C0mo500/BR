@@ -234,6 +234,26 @@ pub fn export_path(dir: &std::path::Path, name: &str, preset: &ExportPreset) -> 
         .unwrap_or_else(|| dir.join(format!("{stem}.{}", preset.ext)))
 }
 
+/// Open files in the video project by their kind: a video project (the first) is opened, videos,
+/// sound and stills are added (`br.video.add`), subtitle files become captions. Paths are made
+/// absolute first (FilmCraft keeps them as given, and a project saved with relative ones loses its
+/// media when opened from another folder). Returns the video's state.
+pub fn open_files(s: &mut Session, paths: &[String]) -> Result<Value, String> {
+    let abs = |p: &String| std::path::absolute(p).map(|a| a.to_string_lossy().into_owned()).unwrap_or_else(|_| p.clone());
+    let paths: Vec<String> = paths.iter().map(abs).collect();
+    let kind = |p: &String| file_kind(p).unwrap_or("");
+    if let Some(project) = paths.iter().find(|p| kind(p) == "project") {
+        run(s, "file.open", json!({"path": project}))?;
+    }
+    let media: Vec<&String> = paths.iter().filter(|p| matches!(kind(p), "video" | "audio" | "image")).collect();
+    let mut st = if media.is_empty() { state(s)? } else { execute(s, "br.video.add", &json!({"paths": media}))? };
+    for subs in paths.iter().filter(|p| kind(p) == "caption") {
+        execute(s, "br.video.captions", &json!({"path": subs}))?;
+        st = state(s)?;
+    }
+    Ok(st)
+}
+
 /// What the media picker offers: video, sound and still images.
 pub fn media_extensions() -> Vec<&'static str> {
     filmcraft_media::VIDEO_EXTENSIONS.iter().chain(filmcraft_media::AUDIO_EXTENSIONS).chain(filmcraft_media::STILL_EXTENSIONS).copied().collect()
@@ -740,11 +760,19 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
                 .unwrap_or_else(|| s.active_sequence().is_some_and(|q| q.caption_tracks.iter().any(|t| t.enabled && !t.captions.is_empty())));
             // the whole video, whatever In and Out marks are set
             let range = p.get("range").cloned().unwrap_or(json!("entire"));
-            run(
+            let r = run(
                 s,
                 "export.quick",
                 json!({"preset": preset.filmcraft, "path": path.to_string_lossy(), "wait": wait, "burnCaptions": burn, "range": range}),
-            )
+            )?;
+            // a waited-for export that failed is a failure (FilmCraft keeps the error in its job)
+            if wait
+                && let Some(job) = r.get("job").and_then(Value::as_u64)
+                && let Some(Err(e)) = s.jobs.iter().find(|j| j.id == job).and_then(|j| j.result.lock().unwrap_or_else(|e| e.into_inner()).clone())
+            {
+                return Err(err(id, e));
+            }
+            Ok(r)
         }
         "br.video.state" => state(s),
         "br.video.commands" => {

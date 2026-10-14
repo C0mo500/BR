@@ -545,3 +545,40 @@ fn each_page_has_its_apps_look() {
     assert_eq!(body(&d), film, "FilmCraft's look is back on its pages");
     assert_ne!(film, photo, "LightCraft's look on Foto (its body text is another size)");
 }
+
+#[test]
+fn a_narrow_window_gives_filmcrafts_menus_a_row_of_their_own() {
+    lightcraft_engine::gpu::set_enabled(false);
+    let mut app = BrApp::new(br_photo::library::demo_session(), None);
+    app.lc.ui.settings.gpu = false;
+    let mut d = Driver::new([1000.0, 700.0], 1.0);
+    assert!(d.settle(&mut app, SETTLE));
+    br_video::execute(&mut app.fc.session, "br.video.new", &serde_json::json!({"format": "9:16"})).unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    let texts = d.texts();
+    for m in ["Datei", "Fenster", "Hilfe"] {
+        assert!(texts.iter().any(|t| t == m), "menu `{m}` not drawn: {texts:?}");
+    }
+    let export = app.widgets["video.export"];
+    let last_tab = app.widgets["page.foto"];
+    assert!(export.left() > last_tab.right(), "the header's tools do not cover the page tabs");
+    assert!(texts.iter().any(|t| t.contains("Untitled") || t.contains("Video")), "the project's name is shown: {texts:?}");
+    snapshot(&d, "narrow");
+}
+
+#[test]
+fn the_cut_layout_has_the_source_monitor_and_quick_export_opens() {
+    let (mut app, mut d) = video_app();
+    let mut panels = Vec::new();
+    app.fc.ui.dock.panels(&mut panels);
+    assert!(panels.contains(&filmcraft_ui_egui::dock::PanelKind::Source), "{panels:?}");
+    br_video::execute(&mut app.fc.session, "br.video.new", &serde_json::json!({"format": "16:9"})).unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    d.click(&mut app, "video.export").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    d.click(&mut app, "vexport.quick").unwrap();
+    assert!(d.settle(&mut app, SETTLE));
+    assert!(app.fc.ui.export.quick_open, "FilmCraft's Quick Export is open");
+    assert!(app.fc.ui_error.is_none(), "{:?}", app.fc.ui_error);
+    snapshot(&d, "quick-export");
+}

@@ -55,7 +55,8 @@ pub fn schnitt_layout() -> DockNode {
         false,
         SplitSize::FixedA(340.0),
         tabs(&[Project, Effects, EssentialGraphics, Text, MediaBrowser]),
-        split(false, SplitSize::FixedB(360.0), tabs(&[Program]), tabs(&[Properties, EffectControls, LumetriColor, EssentialSound])),
+        // the Source monitor shares the picture's place (a double-clicked clip opens there)
+        split(false, SplitSize::FixedB(360.0), tabs(&[Program, Source]), tabs(&[Properties, EffectControls, LumetriColor, EssentialSound])),
     );
     let bottom =
         split(false, SplitSize::FixedA(52.0), tabs(&[Tools]), split(false, SplitSize::FixedB(96.0), tabs(&[Timeline]), tabs(&[AudioMeters])));
@@ -80,6 +81,9 @@ pub fn new_app(mut session: br_video::Session) -> FilmcraftApp {
     let mut fc = FilmcraftApp::new(session);
     fc.ui.show_header = false;
     fc.ui.show_menu_bar = false;
+    // the pages bring their own layouts: FilmCraft must not reopen its last workspace over them on
+    // its first frame (the saved workspaces stay in its Window menu)
+    fc.workspaces.current.clear();
     let (mode, dock) = layout(Page::Schnitt);
     fc.ui.mode = mode;
     fc.ui.dock = dock;
@@ -108,6 +112,13 @@ pub fn show_page(fc: &mut FilmcraftApp, st: &mut VideoState, page: Page) {
     let (mode, default) = layout(page);
     fc.ui.mode = mode;
     fc.ui.dock = st.docks.remove(&page).unwrap_or(default);
+    // Window ▸ Workspaces names (and resets to) the workspace a page is made from
+    fc.ui.workspace = match page {
+        Page::Farbe => "Color",
+        Page::Ton => "Audio",
+        _ => "",
+    }
+    .into();
     st.shown = Some(page);
 }
 
@@ -192,6 +203,16 @@ pub fn ui(fc: &mut FilmcraftApp, st: &mut VideoState, ui: &mut egui::Ui) -> egui
         eframe::App::ui(fc, ui, &mut st.frame);
     });
     rect
+}
+
+/// The video project's name: its file's, else FilmCraft's ("Untitled" for a new one).
+pub fn project_name(fc: &FilmcraftApp) -> String {
+    fc.session
+        .path
+        .as_deref()
+        .and_then(|p| std::path::Path::new(p).file_stem())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| fc.session.project.name.clone())
 }
 
 /// FilmCraft's menu bar, in BR's header.

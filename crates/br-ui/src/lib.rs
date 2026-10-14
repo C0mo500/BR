@@ -96,6 +96,11 @@ pub const TITLE: &str = "BR";
 
 /// Height of BR's header.
 const HEADER_H: f32 = 40.0;
+/// Below this window width FilmCraft's menus get a row of their own on the video pages (beside
+/// the page tabs and the header's tools they would be covered).
+const MENUS_INLINE_WIDTH: f32 = 1320.0;
+/// Height of that row.
+const MENUS_H: f32 = 28.0;
 
 pub struct BrApp {
     /// LightCraft's interface, owner of the one photo session.
@@ -348,6 +353,8 @@ impl BrApp {
     /// BR's header: the wordmark, the pages, the page's quick tools.
     fn header(&mut self, ui: &mut egui::Ui) {
         let t = style::Theme::get(ui.ctx());
+        let menus = self.page.is_video() && self.fonts_ok;
+        let menus_inline = menus && ui.ctx().content_rect().width() >= MENUS_INLINE_WIDTH;
         egui::Panel::top("br_header").exact_size(HEADER_H).frame(egui::Frame::NONE.fill(t.bar).inner_margin(egui::Margin::symmetric(12, 0))).show(
             ui,
             |ui| {
@@ -358,7 +365,7 @@ impl BrApp {
                     if let Some(page) = style::page_tabs(ui, &t, self.page, &mut self.widgets) {
                         self.open(page);
                     }
-                    if self.page.is_video() && self.fonts_ok {
+                    if menus_inline {
                         ui.add_space(10.0);
                         video::menu_bar(&mut self.fc, ui);
                     }
@@ -369,14 +376,36 @@ impl BrApp {
                         } else if self.fonts_ok {
                             cut::header_tools(self, ui, &t);
                         }
-                        if let Some(lib) = &self.library {
+                        // the photo library on the Foto page; the video project's name and
+                        // whether it has unsaved changes on the video pages
+                        if self.page == Page::Foto {
+                            if let Some(lib) = &self.library {
+                                ui.add_space(6.0);
+                                ui.label(egui::RichText::new(lib).size(11.5).color(t.dim)).on_hover_text("Bibliothek");
+                            }
+                        } else {
                             ui.add_space(6.0);
-                            ui.label(egui::RichText::new(lib).size(11.5).color(t.dim)).on_hover_text("Bibliothek");
+                            let name = video::project_name(&self.fc);
+                            let dirty = self.fc.session.is_dirty();
+                            let text = if dirty { format!("{name} •") } else { name };
+                            ui.label(egui::RichText::new(text).size(11.5).color(t.dim)).on_hover_text(if dirty {
+                                "Video-Projekt, ungesicherte Änderungen (Datei › Speichern)"
+                            } else {
+                                "Video-Projekt"
+                            });
                         }
                     });
                 });
             },
         );
+        if menus && !menus_inline {
+            egui::Panel::top("br_menus").exact_size(MENUS_H).frame(egui::Frame::NONE.fill(t.bar).inner_margin(egui::Margin::symmetric(12, 0))).show(
+                ui,
+                |ui| {
+                    ui.horizontal_centered(|ui| video::menu_bar(&mut self.fc, ui));
+                },
+            );
+        }
     }
 
     /// Something is still being worked on (renders, an import or export): keep drawing frames.

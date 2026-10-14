@@ -274,14 +274,23 @@ pub fn add_paths(app: &mut BrApp, ctx: &egui::Context, paths: Vec<String>) {
         return;
     }
     let n = paths.len();
-    if run(app, ctx, "br.video.add", json!({"paths": paths})).is_some() {
-        toast(app, ctx, if n == 1 { "1 Datei hinzugefügt".to_string() } else { format!("{n} Dateien hinzugefügt") });
+    if let Some(st) = run(app, ctx, "br.video.add", json!({"paths": paths})) {
+        let failed: Vec<String> =
+            st["errors"].as_array().into_iter().flatten().map(|e| e.as_str().map_or_else(|| e.to_string(), str::to_string)).collect();
+        let ok = n - failed.len().min(n);
+        let mut text = if ok == 1 { "1 Datei hinzugefügt".to_string() } else { format!("{ok} Dateien hinzugefügt") };
+        if !failed.is_empty() {
+            text += &format!("; nicht lesbar: {}", failed.join(" · "));
+        }
+        toast(app, ctx, text);
     }
 }
 
 /// Files given to the window (command line, "open with"): a video project is opened, videos and
 /// sound are added to the video, subtitle files become captions. Problems are told in the toast.
 pub fn open_files(app: &mut BrApp, ctx: &egui::Context, paths: Vec<String>) {
+    // absolute: FilmCraft keeps paths as given (a saved project would lose its media)
+    let paths: Vec<String> = paths.into_iter().map(|p| std::path::absolute(&p).map(|a| a.to_string_lossy().into_owned()).unwrap_or(p)).collect();
     let kind = |p: &String| br_video::file_kind(p).unwrap_or("");
     if let Some(project) = paths.iter().find(|p| kind(p) == "project") {
         if let Err(e) = filmcraft_ui_egui::menus::invoke(&mut app.fc, ctx, "file.open", json!({"path": project})) {
@@ -595,6 +604,14 @@ pub fn show(app: &mut BrApp, ctx: &egui::Context) {
     if start_screen_visible(app) {
         start_screen(app, ctx);
     }
+    // FilmCraft's Quick Export (its own header had the button), under BR's Exportieren
+    if app.fc.ui.export.quick_open {
+        let anchor = app
+            .widgets
+            .get("video.export")
+            .map_or(egui::pos2(ctx.content_rect().right() - 360.0, 44.0), |r| egui::pos2(r.right() - 340.0, r.bottom() + 6.0));
+        filmcraft_ui_egui::panels::export_mode::quick_export(&mut app.fc, ctx, anchor);
+    }
     let Some((which, button)) = app.cut.open else { return };
     // a tool that needs a video closes when there is none (undo of its creation)
     if !has_video(app) {
@@ -899,6 +916,13 @@ fn export_panel(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
         }
     }
     ui.add_space(8.0);
+    let r = link(ui, "Schnell-Export mit FilmCrafts Vorlagen …");
+    app.widgets.insert("vexport.quick".into(), r.rect);
+    if r.clicked() {
+        app.cut.open = None;
+        app.fc.ui.export.quick_open = true;
+    }
+    ui.add_space(4.0);
     if link(ui, "Alle Formate, Bereich, Warteschlange: Seite Ausgabe").clicked() {
         app.cut.open = None;
         app.open(Page::Ausgabe);

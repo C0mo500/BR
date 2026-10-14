@@ -30,7 +30,7 @@ USAGE
       page. The library is DIR, else
       $BR_LIBRARY, else the library last opened in the window, else ~/Pictures/BR Library;
       --demo opens LightCraft's demo photos in memory and saves nothing.
-      BR_RENDERER=gl draws the window with OpenGL (drivers without Vulkan, software rendering),
+      BR_RENDERER=gl draws the window with OpenGL (Linux and Windows: drivers without Vulkan, software rendering),
       =wgpu with the GPU's own API; BR_WAYLAND=1 keeps native Wayland (by default BR uses X11
       where it can, which is what makes dropping files work).
       BR_IMPORT_DIR is the folder the import dialog opens in (see deploy/browser for a BR
@@ -72,7 +72,8 @@ USAGE
   br snapshot [--library DIR | --demo] [--page PAGE] [--popover looks|format|export]
               [-o OUT.png] [--size WxH] [--scale S] [FILES…]
       Draw the window without a display (no GPU needed) into a PNG. PAGE: medien, schnitt
-      (default), farbe, ton, ausgabe, foto (default with FILES or --popover, the Foto tools).
+      (default), farbe, ton, ausgabe, foto (default with photo FILES and no videos, and with
+      --popover: the Foto tools).
 
   Logging goes to standard error (and the window's log file), never to standard output:
   warnings, and information from BR and LightCraft. BR_LOG=debug|info|warn sets the level of
@@ -383,6 +384,9 @@ fn window(args: &[String], logger: Option<&'static logging::AppLogger>) -> Resul
     let forced = std::env::var("BR_RENDERER").ok().map(|r| r.to_lowercase());
     let renderer = match forced.as_deref() {
         // `glow` was the separate OpenGL renderer of earlier versions: it now means OpenGL too
+        Some("gl" | "glow" | "opengl") if cfg!(target_os = "macos") => {
+            return Err("BR_RENDERER=gl: OpenGL is not available on macOS (BR draws with Metal there)".into());
+        }
         Some("gl" | "glow" | "opengl") => Renderer::Gl,
         Some("wgpu") | None => Renderer::Wgpu,
         Some(other) => return Err(format!("BR_RENDERER={other}: use gl or wgpu")),
@@ -433,6 +437,10 @@ fn window(args: &[String], logger: Option<&'static logging::AppLogger>) -> Resul
                 }
                 // FilmCraft in the window: dialogs, the GPU, sound
                 br_ui::desktop::film::attach(&mut app.fc, cc);
+                // Settings ▸ General ▸ At Startup (when no video files are given)
+                if videos.is_empty() && !demo {
+                    br_ui::desktop::film::at_startup(&mut app.fc);
+                }
                 // the settings from the last run replace BR's defaults (German, for one)
                 if let Some(ui) = saved {
                     app.lc.ui = ui;
@@ -482,6 +490,10 @@ fn window(args: &[String], logger: Option<&'static logging::AppLogger>) -> Resul
     };
     if forced.is_some() || renderer != Renderer::Wgpu {
         return Err(format!("could not open the window: {failure} (try BR_RENDERER=gl or BR_RENDERER=wgpu)"));
+    }
+    // wgpu has no OpenGL on macOS (only Metal): nothing to fall back to
+    if cfg!(target_os = "macos") {
+        return Err(format!("could not open the window: {failure}"));
     }
     // a failed or crashed wgpu start can leave the event loop unusable: start again with OpenGL
     log::warn!("the window could not start with wgpu ({failure}); starting again with OpenGL");
@@ -556,7 +568,7 @@ fn mcp(args: &[String]) -> Result<(), String> {
     // videos, sound and subtitles into the video project, the rest into the photo library
     let (videos, files): (Vec<String>, Vec<String>) = files.into_iter().partition(|f| br_video::is_video_file(f));
     if !videos.is_empty() {
-        let st = br_video::execute(&mut backend.video, "br.video.add", &json!({"paths": videos}))?;
+        let st = br_video::open_files(&mut backend.video, &videos)?;
         log::info!("video: {st}");
     }
     if !files.is_empty() {
@@ -697,7 +709,9 @@ fn parse_steps(tokens: &[String]) -> Result<Vec<Step>, String> {
         } else if let Some((k, v)) = t.split_once('=') {
             let step = steps.last_mut().ok_or_else(|| format!("param `{t}` before any command"))?;
             let k = k.trim();
-            step.params[k] = if TEXT_PARAMS.contains(&k) { json!(v) } else { serde_json::from_str(v).unwrap_or_else(|_| json!(v)) };
+            // text stays text for these, except a list or an object (film.masks.add path=[[…]])
+            let structured = v.trim_start().starts_with(['[', '{']);
+            step.params[k] = if TEXT_PARAMS.contains(&k) && !structured { json!(v) } else { serde_json::from_str(v).unwrap_or_else(|_| json!(v)) };
         } else {
             steps.push(Step { id: t.clone(), params: json!({}) });
         }
@@ -736,7 +750,11 @@ fn run(args: &[String]) -> Result<(), String> {
     }
     let mut video = br_video::Session::default();
     if !video_imports.is_empty() {
-        br_video::execute(&mut video, "br.video.add", &json!({"paths": video_imports}))?;
+        let st = br_video::open_files(&mut video, &video_imports)?;
+        // a file that could not be read stops the run, as a photo that could not be imported does
+        if let Some(errors) = st.get("errors").filter(|e| e.as_array().is_some_and(|a| !a.is_empty())) {
+            return Err(format!("not imported: {errors}"));
+        }
     }
     let mut failed = false;
     for step in steps {

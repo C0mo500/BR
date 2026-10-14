@@ -60,6 +60,10 @@ pub fn hooks() -> HostHooks {
     }));
     h.system_theme = super::appearance::service();
     h.clipboard_media = Some(Box::new(clipboard_media));
+    // Interface Language ▸ System Language
+    h.system_languages = Some(Box::new(|| sys_locale::get_locales().collect()));
+    // where a file dropped from the file manager lands (winit reports no motion during an OS drag)
+    h.cursor_screen_position = Some(Box::new(filmcraft_platform::cursor::cursor_screen_position));
     h
 }
 
@@ -191,12 +195,40 @@ pub fn register_process(log_dir: Option<std::path::PathBuf>, gpu_export: bool) {
 /// it offers to recover what a crash left and finds the workspaces saved before.
 pub fn session(data_dir: Option<std::path::PathBuf>) -> br_video::Session {
     let mut s = br_video::Session::default();
-    if let Some(dir) = data_dir
-        && let Err(e) = s.start_autosave(filmcraft_engine::autosave::AutosaveConfig::new(dir))
+    if let Some(dir) = data_dir {
+        let mut cfg = filmcraft_engine::autosave::AutosaveConfig::new(dir);
+        // auto-save file names and recovery times in local time
+        cfg.local_offset = local_offset;
+        if let Err(e) = s.start_autosave(cfg) {
+            log::warn!("video auto-save and crash recovery unavailable: {e}");
+        }
+    }
+    // voice-over recording reads the microphone (without it FilmCraft records a test signal)
+    #[cfg(feature = "audio")]
     {
-        log::warn!("video auto-save and crash recovery unavailable: {e}");
+        s.voiceover.input = Some(Box::new(super::audio_in::CpalIn::new(&s.prefs.audio_hardware.device_class)));
     }
     s
+}
+
+/// The local UTC offset at a unix time, in seconds.
+fn local_offset(unix: i64) -> i32 {
+    use chrono::TimeZone;
+    chrono::Local.timestamp_opt(unix, 0).single().map(|d| d.offset().local_minus_utc()).unwrap_or(0)
+}
+
+/// FilmCraft's Settings ▸ General ▸ At Startup, when the window opens without video files: the
+/// most recent project ("Open Most Recent"). BR's start screen stands for FilmCraft's Home.
+pub fn at_startup(fc: &mut filmcraft_ui_egui::FilmcraftApp) {
+    if fc.session.prefs.general.at_startup != "openMostRecent" {
+        return;
+    }
+    let recent = fc.session.prefs.general.recent_projects.iter().find(|p| std::path::Path::new(p).exists()).cloned();
+    if let Some(p) = recent
+        && let Err(e) = fc.session.execute("file.open", serde_json::json!({"path": p}))
+    {
+        log::error!("opening the most recent video project: {e}");
+    }
 }
 
 /// FilmCraft in BR's window: the desktop hooks, the window's GPU device for the monitors (without
