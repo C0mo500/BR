@@ -1,0 +1,27 @@
+[package]
+name = "shnyp-video"
+description = "shnyp's video page logic: FilmCraft sessions and shnyp's one-step video commands (formats, cuts, text, captions, music, filters, export)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+filmcraft-audio-dsp = { workspace = true }
+filmcraft-edit = { workspace = true }
+filmcraft-engine = { workspace = true }
+filmcraft-media = { workspace = true }
+filmcraft-project = { workspace = true }
+filmcraft-render = { workspace = true }
+filmcraft-speech = { workspace = true }
+filmcraft-time = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+
+[features]
+# Automatic captions: Whisper on the CPU (FilmCraft's speech crate, pure Rust) and the model
+# download (once, into FilmCraft's data folder).
+whisper = ["filmcraft-engine/whisper", "filmcraft-engine/speech-download", "filmcraft-speech/whisper", "filmcraft-speech/download"]
+
+[lints]
+workspace = true

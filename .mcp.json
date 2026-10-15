@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "br": {
+    "shnyp": {
       "command": "cargo",
-      "args": ["run", "--quiet", "--release", "-p", "br", "--", "mcp", "--demo"]
+      "args": ["run", "--quiet", "--release", "-p", "shnyp", "--", "mcp", "--demo"]
     }
   }
 }

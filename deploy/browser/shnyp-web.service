@@ -1,0 +1,24 @@
+[Unit]
+Description=shnyp im Browser (virtueller Bildschirm, shnyp, noVNC)
+After=network.target
+
+[Service]
+Type=simple
+User=shnyp
+Group=shnyp
+EnvironmentFile=/etc/shnyp-web.env
+Environment=HOME=/srv/shnyp
+WorkingDirectory=/srv/shnyp
+ExecStart=/opt/shnyp/bin/shnyp-web
+Restart=always
+RestartSec=2
+# eigenes /tmp: der X-Bildschirm und der VNC-Socket sind nur in diesem Dienst sichtbar
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadWritePaths=/srv/shnyp
+
+[Install]
+WantedBy=multi-user.target

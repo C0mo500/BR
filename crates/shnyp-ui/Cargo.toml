@@ -1,0 +1,57 @@
+[package]
+name = "shnyp-ui"
+description = "shnyp's window: pages like DaVinci Resolve (video with FilmCraft, photos with LightCraft), each complete, with CapCut-style quick tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+shnyp-photo = { workspace = true }
+lightcraft-engine = { workspace = true }
+lightcraft-ui-egui = { workspace = true }
+lightcraft-raster = { workspace = true }
+lightcraft-codecs = { workspace = true }
+egui = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11"] }
+rfd = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+shnyp-video = { workspace = true }
+getrandom = { workspace = true }
+chrono = { workspace = true }
+sys-locale = { workspace = true }
+filmcraft-engine = { workspace = true }
+filmcraft-ui-egui = { workspace = true }
+filmcraft-export = { workspace = true }
+filmcraft-gpu = { workspace = true }
+filmcraft-platform = { workspace = true }
+filmcraft-geom = { workspace = true }
+filmcraft-project = { workspace = true }
+filmcraft-render = { workspace = true }
+filmcraft-time = { workspace = true }
+cpal = { workspace = true, optional = true }
+arboard = { workspace = true }
+
+[dev-dependencies]
+shnyp-mcp = { workspace = true }
+lightcraft-mcp = { workspace = true }
+
+[features]
+# sound for video playback through the system's audio device (cpal: ALSA on Linux)
+audio = ["dep:cpal"]
+# automatic captions (Whisper on the CPU, the model downloaded on first use)
+whisper = ["shnyp-video/whisper"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { workspace = true }
+# where the pointer is during a drag from the file manager (winit reports nothing then)
+x11rb = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-app-kit = { workspace = true }
+objc2-foundation = { workspace = true }
+
+[lints]
+workspace = true

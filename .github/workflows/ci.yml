@@ -9,7 +9,7 @@ env:
   CARGO_TERM_COLOR: always
   LIGHTCRAFT_GPU: "0"
   # the video tests run on real files made by ffmpeg: here they must not be skipped
-  BR_REQUIRE_FFMPEG: "1"
+  SHNYP_REQUIRE_FFMPEG: "1"
 
 jobs:
   test:
@@ -35,6 +35,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Shell scripts
-        run: bash -n deploy/browser/br-web deploy/browser/install.sh && shellcheck deploy/browser/br-web deploy/browser/install.sh
-      - name: br-dateien
+        run: bash -n deploy/browser/shnyp-web deploy/browser/install.sh && shellcheck deploy/browser/shnyp-web deploy/browser/install.sh
+      - name: shnyp-dateien
         run: python3 -m unittest discover -s deploy/browser -v

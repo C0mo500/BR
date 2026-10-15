@@ -1,14 +1,14 @@
-# BR im Browser hinter nginx: in den server-Block mit HTTPS (z. B. von certbot) einfügen.
-# Login-Datei anlegen:  htpasswd -c /etc/nginx/br.htpasswd ich   (Paket apache2-utils)
-# Hier unter https://example.org/br/ – für eine eigene Subdomain (sicherer: unter einem Pfad teilt BR
-# den Ursprung mit allem anderen auf der Domain, siehe README) überall /br/ durch / ersetzen.
+# shnyp im Browser hinter nginx: in den server-Block mit HTTPS (z. B. von certbot) einfügen.
+# Login-Datei anlegen:  htpasswd -c /etc/nginx/shnyp.htpasswd ich   (Paket apache2-utils)
+# Hier unter https://example.org/shnyp/ – für eine eigene Subdomain (sicherer: unter einem Pfad teilt shnyp
+# den Ursprung mit allem anderen auf der Domain, siehe README) überall /shnyp/ durch / ersetzen.
 # "^~": Regex-Blöcke, die im server-Block schon stehen (etwa für .js oder .jpg), greifen hier nicht.
 
-location = /br { return 301 /br/; }
+location = /shnyp { return 301 /shnyp/; }
 
-location ^~ /br/ {
-    auth_basic "BR";
-    auth_basic_user_file /etc/nginx/br.htpasswd;
+location ^~ /shnyp/ {
+    auth_basic "shnyp";
+    auth_basic_user_file /etc/nginx/shnyp.htpasswd;
 
     # die Seite, Foto-Upload, Exporte und der Ton (gestreamt: nicht puffern)
     proxy_pass http://127.0.0.1:6081/;
@@ -19,16 +19,16 @@ location ^~ /br/ {
     proxy_send_timeout 1h;
 }
 
-location ^~ /br/novnc/ {
-    auth_basic "BR";
-    auth_basic_user_file /etc/nginx/br.htpasswd;
+location ^~ /shnyp/novnc/ {
+    auth_basic "shnyp";
+    auth_basic_user_file /etc/nginx/shnyp.htpasswd;
 
-    # Nur die eigene Seite darf noVNC öffnen und die Verbindung zu BR aufbauen: der Browser
+    # Nur die eigene Seite darf noVNC öffnen und die Verbindung zu shnyp aufbauen: der Browser
     # schickt den Login auch mit, wenn eine fremde Webseite es versucht.
-    set $br_origin_ok "";
-    if ($http_origin = "") { set $br_origin_ok 1; }
-    if ($http_origin = "$scheme://$http_host") { set $br_origin_ok 1; }
-    if ($br_origin_ok = "") { return 403; }
+    set $shnyp_origin_ok "";
+    if ($http_origin = "") { set $shnyp_origin_ok 1; }
+    if ($http_origin = "$scheme://$http_host") { set $shnyp_origin_ok 1; }
+    if ($shnyp_origin_ok = "") { return 403; }
     if ($http_sec_fetch_site ~ "^(cross-site|same-site)$") { return 403; }
     add_header X-Frame-Options SAMEORIGIN always;
 

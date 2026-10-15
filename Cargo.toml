@@ -7,14 +7,14 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
-repository = "https://github.com/C0mo500/BR"
+repository = "https://github.com/C0mo500/shnyp"
 
 [workspace.dependencies]
 # internal
-br-photo = { path = "crates/br-photo" }
-br-mcp = { path = "crates/br-mcp" }
-br-ui = { path = "crates/br-ui" }
-br-video = { path = "crates/br-video" }
+shnyp-photo = { path = "crates/shnyp-photo" }
+shnyp-mcp = { path = "crates/shnyp-mcp" }
+shnyp-ui = { path = "crates/shnyp-ui" }
+shnyp-video = { path = "crates/shnyp-video" }
 
 # LightCraft (photo engine and its Pro interface), all pinned to one upstream commit
 lightcraft-engine = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
@@ -26,7 +26,7 @@ lightcraft-codecs = { git = "https://github.com/storytold/lightcraft", rev = "a4
 lightcraft-sysmem = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
 
 # video: FilmCraft (Premiere-style editor: timeline, colour, sound, captions, export), the
-# release BR is built and tested against
+# release shnyp is built and tested against
 filmcraft-engine = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
 filmcraft-ui-egui = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
 filmcraft-export = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
