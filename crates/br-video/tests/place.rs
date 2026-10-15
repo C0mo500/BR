@@ -191,6 +191,10 @@ fn sound_goes_on_a_free_sound_track_and_long_sound_is_music() {
     let r = ok(&mut v.s, "br.video.place", json!({"paths": [song], "target": "audio", "seconds": 0.0}));
     let m = r["clips"][0].as_u64().unwrap();
     assert_eq!(kind(&v.s, m), Some(AudioType::Music));
+    // music ends with the picture, as the Musik tool's does
+    let q = v.s.active_sequence().unwrap();
+    let end = q.video_tracks.iter().flat_map(|t| &t.items).map(|it| it.end().seconds()).fold(0.0, f64::max);
+    assert!(close(where_(&v.s, m).2, end), "{:?} vs {end}", where_(&v.s, m));
     // a video's sound alone onto a sound track
     let c = clip(&v.d, "c.mp4", 2);
     let r = ok(&mut v.s, "br.video.place", json!({"paths": [c], "target": "audio", "seconds": 1.0}));

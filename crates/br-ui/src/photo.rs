@@ -173,8 +173,9 @@ pub(crate) fn open_popover(app: &mut BrApp, key: &str, toggle_it: bool) -> bool 
         app.photo.open = None;
         return true;
     }
-    let rect =
-        app.widgets.get(&format!("tool.{key}")).copied().unwrap_or_else(|| Rect::from_center_size(egui::pos2(1200.0, 20.0), egui::vec2(80.0, 28.0)));
+    // Exportieren is the header's button, the others are tools
+    let button = if p == Popover::Export { "export".to_string() } else { format!("tool.{key}") };
+    let rect = app.widgets.get(&button).copied().unwrap_or_else(|| Rect::from_center_size(egui::pos2(1200.0, 20.0), egui::vec2(80.0, 28.0)));
     finish_drags(app);
     app.photo.open = Some((p, rect));
     true

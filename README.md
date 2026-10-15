@@ -24,28 +24,65 @@ die mit einem Klick zum Ergebnis führen, und hinter jedem davon das volle Werkz
 Jede Seite behält das Layout, das man ihr gibt. FilmCrafts Menüleiste steht in BRs Kopfzeile, und jedes
 Panel lässt sich über „Fenster“ auf jede Seite holen. Tastenkürzel gehen an die App der sichtbaren Seite.
 
-![Schnitt: CapCuts Werkzeugleiste über FilmCrafts vollständigem Editor](docs/images/br-schnitt.png)
+![Schnitt: Asset-Leiste, Programm-Monitor, Inspector und BRs Timeline mit Titel, Untertiteln, Musik und Beats](docs/images/br-schnitt.png)
 
 ### Schnitt wie in CapCut
 
-- **Startbildschirm** für ein neues Projekt: Format-Kacheln (9:16, 16:9, 1:1, 4:5), „Medien hinzufügen“,
-  Projekt öffnen, Beispielprojekt, zuletzt geöffnete Projekte. Hineingezogene Dateien werden direkt zum
-  Video, und das erste Video gibt das Format vor.
-- **Werkzeugleiste** über dem Editor: Medien, Text, Untertitel, Musik, Filter, Übergang | Teilen, Löschen,
-  Tempo, Ton trennen | Rückgängig, Wiederholen. Jedes Werkzeug ist ein einziger Rückgängig-Schritt.
-- **Untertitel automatisch** aus der Sprache: Whisper läuft auf dem eigenen Rechner, im Hintergrund mit
-  Fortschritt und Abbrechen. Das Sprachmodell (etwa 150 MB) wird beim ersten Mal geladen.
-- **Musik** kommt als eigene Spur unter das Video, genauso lang wie das Video und unter Sprache automatisch
-  leiser.
-- **Format** (oben rechts): Das Video wird in ein anderes Seitenverhältnis gebracht, die Clips eingepasst
-  oder füllend.
+Die Schnitt-Seite ist CapCuts Anordnung, gebaut aus FilmCrafts Teilen: links die **Asset-Leiste**, in der
+Mitte der **Programm-Monitor**, rechts BRs **Inspector**, unten BRs **Timeline**. Alles schreibt in dieselbe
+FilmCraft-Sequenz; FilmCrafts eigene Timeline und Panels sind einen Klick entfernt (**Profi**, **Voll**,
+„Fenster“).
+
+- **Startbildschirm:** Format-Kacheln (9:16, 16:9, 1:1, 4:5), Vorlagen („Schnelle Story“, „Reise-Montage“,
+  „Im Takt“, „YouTube-Intro“ und eigene), Medien hinzufügen, Projekt öffnen, zuletzt Geöffnetes.
+  Hineingezogene Dateien werden direkt zum Video; das erste gibt das Format vor.
+- **Timeline:** eine **magnetische Hauptspur** ohne Lücken (Löschen schließt auf, Einfügen schiebt weiter),
+  darüber Overlays und Texte, darunter Ton und Musik, oben Untertitel. Was auf einem Hauptclip beginnt,
+  hängt an ihm (**Verknüpfung**) und geht beim Verschieben, Trimmen, Tempo-Ändern und Löschen mit; ein
+  Rückgängig holt alles zurück. Ziehen ordnet um und trimmt, das Lineal setzt die Abspielposition,
+  **Beats** markiert den Takt der Musik.
+- **Ziehen und Ablegen überallhin:** Dateien aus dem Dateimanager oder Clips aus der Asset-Leiste auf die
+  Hauptspur (an die nächste Schnittstelle), darüber (Overlay), darunter (Ton), auf einen Clip (Effekt,
+  Übergang, Look) oder auf den Monitor (Overlay an genau dieser Stelle im Bild).
+- **Monitor:** Ein Klick wählt den Clip im Bild, Griffe verschieben, skalieren und drehen ihn.
+- **Inspector** in drei Stufen: **Basis** zeigt CapCuts Reiter je nach Clip (Video, Text, Ton, Musik,
+  Untertitel, Übergang …) mit Reglern, Rauten für Keyframes und Zurücksetzen; **Mehr** jeden Effekt des
+  Clips mit allen Parametern und einen Effekt-Wähler; **Voll** FilmCrafts Effekteinstellungen, Lumetri,
+  Essential Sound und Text-Panel an derselben Stelle. Jeder Ziehvorgang ist ein Rückgängig-Schritt.
+- **Werkzeugleiste:** Medien, Text, Untertitel, Musik, Filter, Übergang | Teilen, Löschen, Tempo, Ton
+  trennen | Rückgängig, Wiederholen.
+- **Tempo:** Faktor, **Tempo-Kurven** (Montage, Bullet, Sprung, Blitz rein/raus …, gebacken in Stücke
+  konstanten Tempos mit passendem Ton), **Einfrieren** und **Rückwärts**.
+- **Format** (oben rechts): anderes Seitenverhältnis mit Einpassen, Füllen oder **Motiv folgen**
+  (Auto-Reframe); **Hintergrund füllen** mit dem unscharfen Clip selbst, einer Farbe oder einem Bild;
+  Titel wandern und skalieren mit.
+- **Untertitel** automatisch aus der Sprache (Whisper, lokal, im Hintergrund) oder aus einer Datei.
+- **Musik** als eigene Spur, so lang wie das Video und unter Sprache leiser.
+- **Vorlagen:** Platzhalter, die man in Reihenfolge mit Medien füllt (zu kurze Clips laufen langsamer);
+  „Im Takt“ schneidet auf die Beats der Musik. Jedes Video lässt sich als eigene Vorlage speichern.
 - **Exportieren** (oben rechts) mit Vorlagen für TikTok/Reels/Shorts (1080 × 1920), YouTube 1080p und 4K,
-  „wie das Video“ und ProRes 422 HQ. Der Export läuft im Hintergrund, mit Fortschritt.
+  „wie das Video“ und ProRes 422 HQ, im Hintergrund mit Fortschritt.
 
 ![Startbildschirm für ein neues Video](docs/images/br-start.png)
 
-Auf der Foto-Seite gibt es dasselbe für Bilder: Looks mit Stärke-Regler, Formate auf den Pixel genau und
-Export-Vorlagen (Instagram, Story, Quadrat, Breitbild, volle Auflösung).
+### Befehlssuche und Tasten
+
+**Strg+K** (⌘K) sucht unter jedem Befehl von BR, FilmCraft und LightCraft, auf Deutsch, Englisch, nach
+Kennung, Menü oder CapCut-Wort („teilen“, „Standbild“, „Beats“), zeigt seine Taste und führt ihn aus;
+Befehle, die Werte brauchen, bekommen ein kleines Formular. **Strg+Alt+1 … 6** wechselt die Seiten.
+
+FilmCrafts Tastenbelegung startet als **CapCut**: Final Cuts Tasten (A, B, Leertaste, J/K/L, I/O, M, N …)
+und dazu ⌘B Teilen, ⌫/Entf Löschen mit Aufschließen, P Magnet, ⌘R Tempo, ⌘E Exportieren. BRs Befehle
+stehen in FilmCrafts Tastenkürzel-Editor (Abschnitt „BR“) und lassen sich dort umlegen; eine andere
+Belegung (FilmCraft, Premiere, Final Cut, Avid) bleibt, wenn man sie wählt.
+
+![Befehlssuche: „standbild“ findet BRs Einfrieren und FilmCrafts Standbild-Befehle](docs/images/br-befehlssuche.png)
+
+### Foto
+
+Die Foto-Seite ist LightCraft vollständig (Bibliothek, RAW-Entwicklung, Masken, Kurven), mit BRs schnellen
+Werkzeugen darüber: Looks mit Stärke-Regler, Formate auf den Pixel genau und Export-Vorlagen (Instagram,
+Story, Quadrat, Breitbild, volle Auflösung).
 
 ![Foto: LightCraft mit BRs Looks](docs/images/br-foto.png)
 
@@ -56,12 +93,18 @@ claude mcp add br -- /pfad/zu/br mcp                 # eigenes Projekt im Speich
 claude mcp add br -- /pfad/zu/br mcp --connect       # im laufenden Fenster (br --control)
 ```
 
-- **Video** (`br_video_*`): `br_video_add`, `br_video_new`, `br_video_split`, `br_video_delete`,
-  `br_video_speed`, `br_video_detach_audio`, `br_video_text`, `br_video_auto_captions`,
-  `br_video_captions`, `br_video_music`, `br_video_looks`, `br_video_filter`, `br_video_format`,
-  `br_video_transition`, `br_video_preview` (gibt ein Bild zurück), `br_video_export`, `br_video_state`,
-  `br_video_undo`, `br_video_redo`. Lange Arbeit (Untertitel, Export eines langen Videos) läuft mit
-  `wait: false` im Hintergrund; `br_video_jobs` zeigt den Fortschritt, `br_video_cancel` bricht ab.
+- **Video** (`br_video_*`): anlegen und füllen (`br_video_new`, `br_video_add`, `br_video_place` – wie ein
+  Ablegen mit der Maus), schneiden auf der magnetischen Hauptspur (`br_video_split`, `br_video_delete`,
+  `br_video_move`, `br_video_trim`, `br_video_duplicate`, `br_video_pack`, `br_video_magnet`,
+  `br_video_linkage`, `br_video_anchor(s)`), Tempo (`br_video_speed`, `br_video_curve`, `br_video_freeze`,
+  `br_video_reverse`), Bild (`br_video_transform`, `br_video_fit`, `br_video_background`,
+  `br_video_reframe`, `br_video_format`), der Inspector (`br_video_inspect`, `br_video_set`,
+  `br_video_keyframe`, `br_video_effect`, `br_video_schema`), Text, Ton und Look (`br_video_text`,
+  `br_video_captions`, `br_video_auto_captions`, `br_video_music`, `br_video_beats`, `br_video_detach_audio`,
+  `br_video_looks`, `br_video_filter`, `br_video_transition`), Vorlagen (`br_video_template_list|new|fill|save`),
+  `br_video_preview` (gibt ein Bild zurück), `br_video_export`, `br_video_state`, `br_video_undo|redo`.
+  Lange Arbeit läuft mit `wait: false` im Hintergrund; `br_video_jobs` zeigt den Fortschritt,
+  `br_video_cancel` bricht ab.
 - **Der ganze FilmCraft:** `film_commands` sucht unter seinen über 300 Befehlen (Timeline, Lumetri,
   Keyframes, Essential Sound, Untertitel, Export-Einstellungen …), `film_run` führt jeden davon aus.
 - **Fotos** (`br_*`): `br_looks`, `br_look`, `br_adjust`, `br_auto`, `br_crop`, `br_export`, `br_preview`,
@@ -72,7 +115,10 @@ claude mcp add br -- /pfad/zu/br mcp --connect       # im laufenden Fenster (br 
 **Im laufenden Fenster:** Mit `br --control` (oder `BR_CONTROL=1`) öffnet BR einen Steuerkanal auf
 127.0.0.1. Dann arbeitet `br mcp --connect` in dem Fenster, das man sieht: Claude schneidet, und man schaut
 zu. Den Kanal schützt ein Token, das BR bei jedem Start neu erzeugt und nur für den eigenen Benutzer lesbar
-ablegt (`control.json` im Einstellungsordner). Ohne dieses Token wird keine Anfrage ausgeführt.
+ablegt (`control.json` im Einstellungsordner). Ohne dieses Token wird keine Anfrage ausgeführt. `br.inspect`
+nennt dort jedes Bedienelement des Fensters mit seinem Platz und dem Befehl, den es ausführt
+(`controls`); `br.palette.search` und `br.palette.run` sind die Befehlssuche, `br.drop` legt Dateien an
+einer Stelle des Fensters ab, als wären sie dorthin gezogen worden.
 
 Das Repo enthält eine fertige [`.mcp.json`](.mcp.json).
 
@@ -94,16 +140,17 @@ br snapshot --page farbe -o shot.png # Fenster ohne Bildschirm als PNG
 ## Im Browser
 
 `deploy/browser` macht aus einem Linux-Server einen BR, der im Browser läuft. Fotos und Videos werden auf
-der Seite hochgeladen, die Exporte dort heruntergeladen. Das Ganze steht hinter einem Login, und Claude
-kann im selben Fenster mitarbeiten. Siehe [deploy/browser/README.md](deploy/browser/README.md).
+der Seite hochgeladen (auf das BR-Bild gezogen, landen sie dort, wo man sie loslässt), die Exporte dort
+heruntergeladen, und der Ton der Wiedergabe spielt im Browser. Das Ganze steht hinter einem Login, und
+Claude kann im selben Fenster mitarbeiten. Siehe [deploy/browser/README.md](deploy/browser/README.md).
 
 ## Aufbau
 
 | Crate | Inhalt |
 |---|---|
-| `crates/br-video` | BRs Video-Befehle (`br.video.*`) auf FilmCrafts Engine, jeder ein Rückgängig-Schritt; Auto-Untertitel im Hintergrund. Gemeinsam genutzt von Fenster, CLI und MCP. |
+| `crates/br-video` | BRs Video-Befehle (`br.video.*`) auf FilmCrafts Engine, jeder ein Rückgängig-Schritt: Hauptspur und Anker, Inspector-Zeilen, Platzieren, Hintergrund und Reframe, Tempo-Kurven, Beats, Vorlagen, Auto-Untertitel. Gemeinsam genutzt von Fenster, CLI und MCP. |
 | `crates/br-photo` | Dasselbe für Fotos (`br.*`) auf LightCraft: Looks, Regler, Formate, Export-Vorlagen. |
-| `crates/br-ui` | Das Fenster: die Seiten, FilmCraft und LightCraft darin, CapCuts Werkzeuge und Startbildschirm, der Steuerkanal und ein Headless-Treiber für Screenshots und Tests. |
+| `crates/br-ui` | Das Fenster: die Seiten, FilmCraft und LightCraft darin, BRs Timeline, Inspector, Asset-Leiste, Monitor-Griffe, Werkzeuge, Startbildschirm, Befehlssuche und Tasten, der Steuerkanal und ein Headless-Treiber für Screenshots und Tests. |
 | `crates/br-mcp` | Der MCP-Server: der von LightCraft, mit BRs Foto- und Video-Werkzeugen davor; im Speicher oder verbunden mit einem Fenster. |
 | `apps/br` | Das Programm `br`. |
 

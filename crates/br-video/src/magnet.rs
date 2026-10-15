@@ -740,12 +740,18 @@ pub(crate) fn place_sound(s: &mut Session, item: u64, t: Tick, track: Option<Tra
     if let Some((from, len)) = range {
         p["sourceIn"] = json!(from.0);
         p["duration"] = json!(len.0);
+    } else {
+        // music that would run past the picture ends with it, as the Musik tool's does: music
+        // must not add black
+        let end = picture_end(q);
+        if len >= Tick::from_seconds_f64(MUSIC_SECONDS) && t < end && t + len > end {
+            p["duration"] = json!((end - t).0);
+        }
     }
     let placed = s.execute("timeline.place", p)?;
     let clips: Vec<u64> = placed.get("clips").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_u64).collect();
-    let long = clips.iter().any(|c| {
-        s.active_sequence().and_then(|q| q.find_item(ClipId(*c))).is_some_and(|(_, it)| it.duration >= Tick::from_seconds_f64(MUSIC_SECONDS))
-    });
+    // the length of what was chosen, before music was ended with the picture
+    let long = len >= Tick::from_seconds_f64(MUSIC_SECONDS);
     if !clips.is_empty() {
         s.execute("essentialSound.setType", json!({"clips": clips, "type": if long { "music" } else { "sfx" }}))?;
     }

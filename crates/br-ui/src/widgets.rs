@@ -41,6 +41,8 @@ pub const CONTROLS: &[(&str, &str)] = &[
     ("cut.redo", "edit.redo"),
     // the popovers
     ("captions.auto", "br.video.autoCaptions"),
+    ("captions.edit", "br.ui.captions.edit"),
+    ("cut.filter.more", "br.ui.page.farbe"),
     ("captions.file", "br.video.captions"),
     ("filter.*", "br.video.filter"),
     ("speed.curve.*", "br.video.curve"),
@@ -50,6 +52,8 @@ pub const CONTROLS: &[(&str, &str)] = &[
     ("vformat.bg.*", "br.video.background"),
     ("vformat.*", "br.video.format"),
     ("vexport.cancel", "br.video.cancel"),
+    ("vexport.page", "br.ui.page.ausgabe"),
+    ("vexport.quick", "br.ui.export.quick"),
     ("vexport.*", "br.video.export"),
     ("vpreset.*", "br.video.export"),
     // the timeline
@@ -100,7 +104,7 @@ pub const CONTROLS: &[(&str, &str)] = &[
     ("format.*", "br.crop"),
     ("preset.*", "br.export"),
     ("export.*", "br.export"),
-    ("export", "br.export"),
+    ("export", "br.ui.photo.export"),
 ];
 
 /// Ids that are areas, not controls.

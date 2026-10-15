@@ -755,8 +755,12 @@ fn draw_clip(
         }
         waveform(app, &cp, zone, &a, if kind == RowKind::Main { Color32::from_rgb(0x5f, 0xb6, 0xd8) } else { Color32::from_white_alpha(150) });
     }
-    // the name (a title's text), the speed
-    let mut label = it.name.clone();
+    // the name (a title's text, as typed), the speed
+    let text = it.graphic_layers().find_map(|e| match e.params.get("text").map(|p| &p.value) {
+        Some(filmcraft_project::ParamValue::Text(t)) if !t.trim().is_empty() => Some(t.lines().next().unwrap_or_default().to_string()),
+        _ => None,
+    });
+    let mut label = text.unwrap_or_else(|| it.name.clone());
     if (it.speed - 1.0).abs() > 1e-6 || it.reverse {
         label = format!("{label}  {}{}×", if it.reverse { "◀ " } else { "" }, (it.speed * 100.0).round() / 100.0);
     }

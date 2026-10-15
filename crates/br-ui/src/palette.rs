@@ -135,7 +135,8 @@ fn overlay(id: &str) -> Option<(&'static str, &'static str)> {
         "br.video.cancel" => ("Export abbrechen", "stop"),
         "br.video.commands" => ("FilmCraft-Befehle", "liste"),
         "sequence.addEdit" => ("Schnitt setzen (FilmCraft)", "teilen splitten razor"),
-        "clip.frameHold" | "clip.insertFrameHoldSegment" => ("Standbild", "einfrieren freeze"),
+        "clip.frameHold" => ("Standbild (ganzer Clip)", "einfrieren freeze"),
+        "clip.insertFrameHoldSegment" => ("Standbild-Stück einfügen", "einfrieren freeze segment"),
         "clip.nest" => ("Verschachteln", "verbund compound"),
         "clip.speedDuration" => ("Geschwindigkeit/Dauer…", "tempo rückwärts"),
         "edit.undo" => ("Rückgängig", "undo zurück"),
@@ -176,6 +177,8 @@ pub(crate) const BR_UI: &[(&str, &str, &str)] = &[
     ("br.ui.timeline.zoomOut", "Timeline: weiter weg", "zoom verkleinern"),
     ("br.ui.timeline.zoomFit", "Timeline: ganzes Video", "zoom einpassen"),
     ("br.ui.start.skip", "Ohne Video weiter", "startbildschirm leerer editor"),
+    ("br.ui.captions.edit", "Untertitel bearbeiten (Text-Panel)", "untertitel liste transkript"),
+    ("br.ui.export.quick", "Schnell-Export (FilmCraft)", "export vorlagen"),
     ("br.ui.photo.looks", "Foto: Looks …", "filter popover"),
     ("br.ui.photo.format", "Foto: Format …", "zuschneiden popover"),
     ("br.ui.photo.export", "Foto: Exportieren …", "speichern popover"),
@@ -538,6 +541,16 @@ pub fn ui_action(app: &mut BrApp, ctx: &egui::Context, id: &str, toggle: bool) -
     }
     if !app.page.is_video() {
         app.open(Page::Schnitt);
+    }
+    if rest == "captions.edit" {
+        app.cut.open = None;
+        app.fc.show_panel(filmcraft_ui_egui::dock::PanelKind::Text);
+        return Ok(json!({"panel": "text"}));
+    }
+    if rest == "export.quick" {
+        app.cut.open = None;
+        app.fc.ui.export.quick_open = true;
+        return Ok(json!({"quickExport": true}));
     }
     if rest == "start.skip" {
         app.cut.start_dismissed = true;

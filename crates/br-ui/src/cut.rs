@@ -505,8 +505,9 @@ fn tools(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
     if click(app, "add", r).is_some() {
         pick(app, &ctx, PickFor::Media);
     }
-    let r = tool(ui, t, Icon::Type, "Text", "Ein Titel an der Abspielposition; Schrift und Stil rechts unter Eigenschaften", false, video);
-    if click(app, "text", r).is_some() && run(app, &ctx, "br.video.text", json!({"text": "Dein Text"})).is_some() {
+    let r = tool(ui, t, Icon::Type, "Text", "Ein Titel an der Abspielposition; Text, Schrift und Stil rechts im Inspector", false, video);
+    if click(app, "text", r).is_some() && run(app, &ctx, "br.video.text", json!({"text": "Dein Text"})).is_some() && !crate::inspector::visible(app) {
+        // without BR's inspector (FilmCraft's timeline in its place): FilmCraft's Eigenschaften
         app.fc.show_panel(PanelKind::Properties);
     }
     let r = tool(ui, t, Icon::Captions, "Untertitel", "Automatisch aus der Sprache oder aus einer Datei", open == Some(Popover::Captions), video);
@@ -861,7 +862,9 @@ fn captions_panel(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
         invoke(app, &ctx, "captions.import");
     }
     ui.add_space(8.0);
-    if link(ui, "Untertitel bearbeiten: Text-Panel › Untertitel").clicked() {
+    let r = link(ui, "Untertitel bearbeiten: Text-Panel › Untertitel");
+    app.widgets.insert("captions.edit".into(), r.rect);
+    if r.clicked() {
         app.cut.open = None;
         app.fc.show_panel(PanelKind::Text);
     }
@@ -910,7 +913,9 @@ fn filter_panel(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
         toast(app, &ctx, if name == "none" { "Filter entfernt".to_string() } else { format!("Filter: {name}") });
     }
     ui.add_space(6.0);
-    if link(ui, "Feiner einstellen: Seite Farbe (Lumetri, Scopes)").clicked() {
+    let r = link(ui, "Feiner einstellen: Seite Farbe (Lumetri, Scopes)");
+    app.widgets.insert("cut.filter.more".into(), r.rect);
+    if r.clicked() {
         app.cut.open = None;
         app.open(Page::Farbe);
     }
@@ -1145,7 +1150,9 @@ fn export_panel(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
         app.fc.ui.export.quick_open = true;
     }
     ui.add_space(4.0);
-    if link(ui, "Alle Formate, Bereich, Warteschlange: Seite Ausgabe").clicked() {
+    let r = link(ui, "Alle Formate, Bereich, Warteschlange: Seite Ausgabe");
+    app.widgets.insert("vexport.page".into(), r.rect);
+    if r.clicked() {
         app.cut.open = None;
         app.open(Page::Ausgabe);
     }
