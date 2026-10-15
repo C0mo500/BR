@@ -17,6 +17,7 @@ pub mod control;
 pub mod cut;
 pub mod desktop;
 pub mod headless;
+pub mod inspector;
 pub mod photo;
 mod style;
 pub mod timeline;
@@ -117,6 +118,8 @@ pub struct BrApp {
     pub cut: CutState,
     /// BR's timeline on the Schnitt page.
     pub timeline: timeline::TimelineState,
+    /// BR's inspector on the Schnitt page.
+    pub inspector: inspector::InspectorState,
     /// Every font family the apps draw with was bound at the start of this frame.
     fonts_ok: bool,
     /// Screen rectangles of BR's controls from the last frame, by name (`page.foto`,
@@ -191,6 +194,7 @@ impl BrApp {
             video: VideoState::default(),
             cut: CutState::default(),
             timeline: timeline::TimelineState::default(),
+            inspector: inspector::InspectorState::default(),
             fonts_ok: false,
             widgets: HashMap::new(),
             library,
@@ -326,6 +330,7 @@ impl BrApp {
                 if self.page == Page::Schnitt {
                     cut::toolbar(self, ui);
                     timeline::show(self, ui);
+                    inspector::show(self, ui);
                     // BR's timeline is the Schnitt page's: FilmCraft must not dock its own again
                     // when a sequence opens (Window ▸ Timeline still brings it back)
                     if timeline::visible(self) {

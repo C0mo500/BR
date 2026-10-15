@@ -424,9 +424,11 @@ fn handle(app: &mut BrApp, ctx: &egui::Context, req: &ControlRequest) -> Option<
                 "video": br_video::state(&mut app.fc.session).unwrap_or(Value::Null),
                 "photo": app.lc.session.active().map(|id| id.0),
                 "popover": app.photo.popover().map(|p| p.key()).or(app.cut.popover().map(|p| p.key())),
+                "inspector": crate::inspector::state(app),
                 "widgets": widgets,
             }))
         }
+        "br.ui.inspector" => wrap(crate::inspector::control(app, p)),
         "ui.render" => {
             let id = p.get("id").and_then(Value::as_u64).unwrap_or(VIDEO_FRAME);
             let size = p.get("size").and_then(Value::as_u64).unwrap_or(1024).clamp(16, 4096) as u32;
@@ -448,7 +450,9 @@ fn handle(app: &mut BrApp, ctx: &egui::Context, req: &ControlRequest) -> Option<
             let params = p.get("params").cloned().unwrap_or(json!({}));
             return run_command(app, ctx, &id, params, &req.reply);
         }
-        other => err(format!("unknown BR request `{other}` (br.page, br.inspect, engine.execute with br.*, br.video.* or film.<id>)")),
+        other => {
+            err(format!("unknown BR request `{other}` (br.page, br.inspect, br.ui.inspector, engine.execute with br.*, br.video.* or film.<id>)"))
+        }
     })
 }
 
@@ -487,6 +491,7 @@ fn run_command(app: &mut BrApp, ctx: &egui::Context, id: &str, params: Value, re
                 Err(e) => Some(err(e)),
             }
         }
+        "br.ui.inspector" => Some(wrap(crate::inspector::control(app, &params))),
         "br.video.jobs" => Some(ok(json!({"exports": br_video::jobs(&app.fc.session), "captions": crate::cut::caption_status(app)}))),
         "br.video.cancel" if params.get("captions").and_then(Value::as_bool) == Some(true) => {
             Some(ok(json!({"cancelled": crate::cut::cancel_captions(app)})))

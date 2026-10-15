@@ -58,26 +58,32 @@ fn split(vertical: bool, size: SplitSize, a: DockNode, b: DockNode) -> DockNode 
 }
 
 /// CapCut's arrangement from FilmCraft's panels: media and effects on the left, the picture in the
-/// middle, the properties on the right. The timeline under them is BR's ([`crate::timeline`]);
-/// FilmCraft's own is its "Profi" view, and Window ▸ Timeline docks it again.
+/// middle. The timeline under them and the inspector on the right are BR's ([`crate::timeline`],
+/// [`crate::inspector`]); FilmCraft's own are their "Profi" and "Voll" views, and the Window menu
+/// docks them again.
 pub fn schnitt_layout() -> DockNode {
+    use PanelKind::*;
+    // the Source monitor shares the picture's place (a double-clicked clip opens there)
+    split(false, SplitSize::FixedA(340.0), tabs(&[Project, Effects, EssentialGraphics, Text, MediaBrowser]), tabs(&[Program, Source]))
+}
+
+/// The Schnitt layout with FilmCraft's properties on the right (before BR's inspector).
+fn schnitt_layout_v2() -> DockNode {
     use PanelKind::*;
     split(
         false,
         SplitSize::FixedA(340.0),
         tabs(&[Project, Effects, EssentialGraphics, Text, MediaBrowser]),
-        // the Source monitor shares the picture's place (a double-clicked clip opens there)
         split(false, SplitSize::FixedB(360.0), tabs(&[Program, Source]), tabs(&[Properties, EffectControls, LumetriColor, EssentialSound])),
     )
 }
 
-/// The Schnitt layout of BR's first version (FilmCraft's timeline docked under the picture): a
-/// saved workspace that is still exactly this one becomes the new layout.
+/// The Schnitt layout of BR's first version (FilmCraft's timeline docked under the picture).
 fn schnitt_layout_v1() -> DockNode {
     use PanelKind::*;
     let bottom =
         split(false, SplitSize::FixedA(52.0), tabs(&[Tools]), split(false, SplitSize::FixedB(96.0), tabs(&[Timeline]), tabs(&[AudioMeters])));
-    split(true, SplitSize::Ratio(0.58), schnitt_layout(), bottom)
+    split(true, SplitSize::Ratio(0.58), schnitt_layout_v2(), bottom)
 }
 
 /// BR's Schnitt arrangement as one of FilmCraft's workspaces: Window ▸ Workspaces lists it,
@@ -119,10 +125,11 @@ pub fn new_app(mut session: br_video::Session) -> FilmcraftApp {
     // its first frame (the saved workspaces stay in its Window menu)
     fc.workspaces.current.clear();
     let layout_now = serde_json::to_value(schnitt_layout()).unwrap_or_default();
-    let v1 = serde_json::to_value(schnitt_layout_v1()).unwrap_or_default();
+    let old = [schnitt_layout_v1(), schnitt_layout_v2()].map(|l| serde_json::to_value(l).unwrap_or_default());
     match fc.workspaces.saved.iter_mut().find(|w| w.name == SCHNITT_WORKSPACE) {
-        // the first version's layout, unchanged by the user: BR's timeline takes FilmCraft's place
-        Some(w) if w.layout == v1 => w.layout = layout_now,
+        // an earlier version's layout, unchanged by the user: BR's timeline and inspector take
+        // the place of FilmCraft's panels
+        Some(w) if old.contains(&w.layout) => w.layout = layout_now,
         Some(_) => {}
         None => fc.workspaces.saved.push(filmcraft_ui_egui::dock::SavedWorkspace {
             name: SCHNITT_WORKSPACE.into(),

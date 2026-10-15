@@ -28,6 +28,9 @@
 //! | `br.video.format` | another shape (9:16, 16:9, 1:1, 4:5); the clips fit or fill it |
 //! | `br.video.transition` | the default transition (a dissolve) at the cuts of the selected clips |
 //! | `br.video.export` | an MP4 in a preset for TikTok/Reels/Shorts, YouTube, … |
+//! | `br.video.inspect` | the inspector's rows of the selected clip, caption or transition (Basis, Mehr) |
+//! | `br.video.set`, `br.video.keyframe` | set a row or any effect parameter; keyframes at the playhead |
+//! | `br.video.effect`, `br.video.schema` | add, switch off, reset or remove effects; FilmCraft's effect schemas |
 //! | `br.video.state` | the video at a glance |
 
 use serde_json::{Value, json};
@@ -35,6 +38,7 @@ use serde_json::{Value, json};
 pub use filmcraft_engine::Session;
 
 pub mod anchors;
+pub mod inspect;
 pub mod magnet;
 pub mod main_track;
 pub mod reconcile;
@@ -241,6 +245,31 @@ pub const COMMANDS: &[CommandInfo] = &[
         id: "br.video.transition",
         params: r#"{"clips":[id]?}"#,
         summary: "A dissolve at the cuts between the selected clips (every cut of the main track without a selection)",
+    },
+    CommandInfo {
+        id: "br.video.inspect",
+        params: r#"{"clip":id?,"caption":id?,"transition":id?,"seconds":f64?,"level":"basis|mehr"="basis"}"#,
+        summary: "What the selected clip (caption, transition) is made of, as the inspector shows it: Basis rows (key, German label, type, value, range, keyframes) per kind; level mehr adds every effect with every parameter and its keyframes",
+    },
+    CommandInfo {
+        id: "br.video.set",
+        params: r#"{"row":"transform.scale|adjust.exposure|audio.volume|text.text|…"?,"effect":index|id|"adjust"?,"param":str?,"value":any,"clip":id?,"caption":id?,"transition":id?,"seconds":f64?,"keyframe":bool?,"gesture":str?}"#,
+        summary: "Set an inspector row (see br.video.inspect) or any effect parameter, checked against its schema; keyframe:true writes a keyframe at the playhead (or `seconds`); calls with the same `gesture` are one undo step",
+    },
+    CommandInfo {
+        id: "br.video.keyframe",
+        params: r#"{"row":key|[key]?,"effect":index|id|"adjust"?,"param":str?,"op":"toggle|add|remove|clear|ease|prev|next"="toggle","seconds":f64?,"interpolation":"linear|hold|bezier|easeIn|easeOut"?,"all":bool?}"#,
+        summary: "Keyframes of rows or parameters at the playhead: set or remove one (several rows: one step), stop the animation (clear), ease them, or go to the previous/next one",
+    },
+    CommandInfo {
+        id: "br.video.effect",
+        params: r#"{"op":"add|remove|enable|disable|reset","effect":id|name|index|"adjust","param":str?,"clip":id?,"on":id?}"#,
+        summary: "Add an effect to the selected clip (an audio effect goes on its sound), or remove, switch off/on or reset one (`on`: the clip it is on, e.g. the linked sound)",
+    },
+    CommandInfo {
+        id: "br.video.schema",
+        params: r#"{"effect":id|name?,"kind":"video|audio|videoTransition|audioTransition"?,"detail":bool?}"#,
+        summary: "FilmCraft's effects: one effect's parameters (type, range, slider range, unit, default, group, animatable) or the list",
     },
     CommandInfo { id: "br.video.state", params: "{}", summary: "The video at a glance: format, length, clips, playhead" },
     CommandInfo {
@@ -1198,6 +1227,11 @@ fn execute_br(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
             Ok(r)
         }
         "br.video.state" => state(s),
+        "br.video.inspect" => inspect::inspect(s, p),
+        "br.video.set" => inspect::set(s, p).map_err(|e| err(id, e)),
+        "br.video.keyframe" => inspect::keyframe(s, p).map_err(|e| err(id, e)),
+        "br.video.effect" => inspect::effect(s, p).map_err(|e| err(id, e)),
+        "br.video.schema" => inspect::schema(p).map_err(|e| err(id, e)),
         "br.video.jobs" => Ok(json!({"exports": jobs(s)})),
         "br.video.cancel" => {
             let job = p.get("job").and_then(Value::as_u64).ok_or_else(|| err(id, "needs `job` (from br.video.jobs)"))?;
