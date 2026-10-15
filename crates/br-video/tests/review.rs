@@ -304,3 +304,61 @@ fn a_held_curve_on_a_short_clip_keeps_its_speeds() {
     assert!(speeds.iter().all(|v| (0.2..=2.2).contains(v)), "{speeds:?}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn a_sound_dropped_with_a_video_at_the_end_stays_where_it_was_dropped() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let (mut s, _, d) = video("drop-pair");
+    let more = clip(&d, "d.mp4", 2.0);
+    let fx = d.join("whoosh.m4a");
+    ffmpeg(&["-f", "lavfi", "-i", "sine=frequency=880:duration=0.5", "-c:a", "aac"], &fx);
+    let r = ok(&mut s, "br.video.place", json!({"paths": [more, fx.to_string_lossy()], "seconds": 9.0}));
+    let q = q(&s);
+    let whoosh = r["clips"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_u64)
+        .find(|c| q.find_item(ClipId(*c)).is_some_and(|(_, it)| it.link.is_none() && q.audio_tracks.iter().any(|t| t.item(ClipId(*c)).is_some())))
+        .expect("the sound");
+    assert!(close(at(&s, whoosh).0, 9.0), "the sound at 9 s: {:?}", at(&s, whoosh));
+    let m = mains(&s);
+    assert!(close(m.last().unwrap().1, 9.0) && close(m.last().unwrap().2, 11.0), "{m:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_split_placeholder_is_two_to_fill() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let d = dir("split-slot");
+    let mut s = Session::default();
+    ok(&mut s, "br.video.template.new", json!({"template": "story"}));
+    let first = br_video::template::placeholders(q(&s))[0].0;
+    let (a, b) = at(&s, first.0);
+    ok(&mut s, "br.video.split", json!({"clip": first.0, "seconds": (a + b) / 2.0}));
+    let n = br_video::template::placeholders(q(&s)).len();
+    assert_eq!(n, 7, "six slots, the first in two");
+    let files: Vec<String> = (0..n).map(|i| clip(&d, &format!("s{i}.mp4"), 3.0)).collect();
+    let r = ok(&mut s, "br.video.template.fill", json!({"paths": files}));
+    assert!(r["empty"].as_array().unwrap().is_empty(), "no grey left: {r}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_speed_on_a_sound_piece_of_a_curve_is_taken() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let (mut s, [a, ..], d) = video("sound-piece");
+    ok(&mut s, "br.video.curve", json!({"clips": [a], "preset": "montage"}));
+    let piece = main_track::main_clips(q(&s))[1].id.0;
+    let sound = sound_of(&s, piece);
+    ok(&mut s, "br.video.speed", json!({"clips": [sound], "speed": 2.0}));
+    let it = q(&s).find_item(ClipId(sound)).unwrap().1;
+    assert!((it.speed - 2.0).abs() < 1e-6);
+    let _ = std::fs::remove_dir_all(&d);
+}

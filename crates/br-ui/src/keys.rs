@@ -76,17 +76,26 @@ pub fn capcut(sc: &Shortcuts) -> Vec<Binding> {
 }
 
 /// The file that says BR has started FilmCraft's keys as CapCut once (in FilmCraft's data
-/// folder, next to its settings).
+/// folder, next to its settings). It holds the bindings BR wrote last (empty: the user's own set
+/// was there), so BR brings only its own CapCut set up to date, never one the user changed and
+/// saved under that name.
 fn installed_marker(fc: &FilmcraftApp) -> Option<std::path::PathBuf> {
-    fc.session.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| d.join("br-tasten-capcut"))
+    fc.session.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| d.join("br-tasten-capcut.json"))
 }
 
 /// Start FilmCraft's key set as CapCut, once: when it is still FilmCraft's unchanged default the
-/// first time BR runs (whoever then picks another set keeps it, even after deleting the CapCut
-/// preset). An unchanged CapCut set is brought up to date on every start.
+/// first time BR runs (whoever then picks another set keeps it). BR's own CapCut set, unchanged,
+/// is brought up to date on every start.
 pub fn install(fc: &mut FilmcraftApp) {
     let marker = installed_marker(fc);
+    let wrote: Option<String> = marker.as_ref().and_then(|m| std::fs::read_to_string(m).ok());
     let sc = &mut fc.session.shortcuts;
+    let json = |b: &[Binding]| serde_json::to_string(b).unwrap_or_default();
+    let remember = |content: &str| {
+        if let Some(m) = &marker {
+            let _ = std::fs::write(m, content);
+        }
+    };
     let save = |sc: &mut Shortcuts| {
         if sc.save_preset(CAPCUT).is_err() {
             // no data folder (tests, a session in memory): only for now
@@ -96,20 +105,33 @@ pub fn install(fc: &mut FilmcraftApp) {
         }
     };
     if sc.preset == CAPCUT && !sc.modified {
-        let now = capcut(sc);
-        if now != sc.bindings {
-            sc.bindings = now;
-            save(sc);
+        // BR's own (as it wrote it last, or from before BR kept a note): up to date
+        let ours = wrote.as_deref().is_none_or(|w| w == json(&sc.bindings));
+        if ours {
+            let now = capcut(sc);
+            if now != sc.bindings {
+                sc.bindings = now;
+                save(sc);
+            }
+            remember(&json(&sc.bindings));
+        } else if wrote.is_none() {
+            remember("");
         }
         return;
     }
-    let done = marker.as_ref().is_some_and(|m| m.exists());
-    if !done && sc.preset == DEFAULT_PRESET && !sc.modified {
+    // BR did this before (or had a CapCut preset already): the user's choice stays
+    if wrote.is_some() || sc.user_presets().iter().any(|n| n == CAPCUT) {
+        if wrote.is_none() {
+            remember("");
+        }
+        return;
+    }
+    if sc.preset == DEFAULT_PRESET && !sc.modified {
         sc.bindings = capcut(sc);
         save(sc);
-    }
-    if let Some(m) = marker.filter(|_| !done) {
-        let _ = std::fs::write(m, "BR hat die Tastenbelegung einmal auf CapCut gesetzt.\n");
+        remember(&json(&sc.bindings));
+    } else {
+        remember("");
     }
 }
 
@@ -154,9 +176,10 @@ pub fn handle(app: &mut BrApp, ctx: &egui::Context) {
     let open = app.palette.open;
     // FilmCraft's bindings of BR's commands, as (modifiers, key, command)
     let video = app.page.is_video() && app.fc.dialog.is_none();
-    let typing = ctx.text_edit_focused() || ctx.egui_wants_keyboard_input();
-    // FilmCraft's shortcut editor takes every key while it is open (it records them)
-    let editor = app.fc.dialog == Some(filmcraft_ui_egui::Dialog::Shortcuts) || app.fc.shortcut_editor.recording.is_some();
+    // text being typed: a field, or a title typed on the Program monitor (FilmCraft's own)
+    let typing = ctx.text_edit_focused() || ctx.memory(|m| m.has_focus(egui::Id::new("gfx-text-edit")));
+    // FilmCraft's shortcut editor records the next key
+    let recording = app.page.is_video() && app.fc.shortcut_editor.recording.is_some();
     let bound: Vec<(Modifiers, Key, String)> = if video && !open {
         let focused = app.fc.ui.focused.title();
         let sc = &app.fc.session.shortcuts;
@@ -177,15 +200,13 @@ pub fn handle(app: &mut BrApp, ctx: &egui::Context) {
         i.events.retain(|e| {
             let Event::Key { key, pressed: true, modifiers, .. } = e else { return true };
             let (key, m) = (*key, *modifiers);
-            if editor {
-                return true;
-            }
             // Strg+K: the command search (also to close it)
-            if key == Key::K && m.command && !m.shift && !m.alt {
+            if !recording && key == Key::K && m.command && !m.shift && !m.alt {
                 actions.push("br.ui.palette".into());
                 return false;
             }
-            if m.command
+            if !recording
+                && m.command
                 && m.alt
                 && !m.shift
                 && let Some(p) = page_key(key)
@@ -207,7 +228,7 @@ pub fn handle(app: &mut BrApp, ctx: &egui::Context) {
             }
             // a field being typed in keeps its keys, chords too (⌘B in a title's text is not
             // Teilen), as FilmCraft keeps its own shortcuts away from a focused field
-            if typing {
+            if typing || recording {
                 return true;
             }
             if let Some((_, _, id)) = bound.iter().find(|(bm, bk, _)| *bk == key && same_mods(m, *bm)) {

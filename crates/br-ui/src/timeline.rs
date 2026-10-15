@@ -867,14 +867,14 @@ fn peaks(app: &mut BrApp, item: ItemId, stream: usize) -> Option<Arc<Vec<(f32, f
     None
 }
 
-/// Presses, drags and releases on the timeline.
-#[allow(clippy::too_many_arguments)]
 /// Is `p` under something drawn over the timeline (a popover, a menu, a popup, a floating
 /// window, as of the last frame)? Then a press or a drop there is not the timeline's.
-fn covered(ctx: &egui::Context, p: Pos2) -> bool {
+pub(crate) fn covered(ctx: &egui::Context, p: Pos2) -> bool {
     ctx.layer_id_at(p).is_some_and(|l| !matches!(l.order, egui::Order::Background | egui::Order::Tooltip))
 }
 
+/// Presses, drags and releases on the timeline.
+#[allow(clippy::too_many_arguments)]
 fn interact(
     app: &mut BrApp,
     ui: &mut Ui,

@@ -134,17 +134,16 @@ pub fn list(p: &Value) -> Value {
     )
 }
 
-/// The placeholders of the video, in order: (clip, index in the template). A slot cut into
-/// pieces (a speed curve, a split, a freeze) is its first piece.
+/// The placeholders of the video, in order: (clip, index in the template). A slot baked into the
+/// pieces of a speed curve is its first piece (a split or frozen slot stays two to fill).
 pub fn placeholders(q: &Sequence) -> Vec<(ClipId, usize)> {
-    let mut seen = std::collections::HashSet::new();
     main_track::main_clips(q)
         .iter()
+        .filter(|it| crate::speed::curve_of(q, it.id).is_none() || crate::speed::curve_pieces(q, it.id).first() == Some(&it.id))
         .filter_map(|it| {
             let e = it.effect(SLOT)?;
             Some((it.id, e.param("index").and_then(|p| p.value.as_f64()).unwrap_or(0.0) as usize))
         })
-        .filter(|(_, i)| seen.insert(*i))
         .collect()
 }
 

@@ -353,9 +353,9 @@ impl BrApp {
             // onto BR's timeline or the Program monitor: placed CapCut's way; elsewhere FilmCraft
             // imports them into the project
             let Some(at) = drop::os_pointer(self, ctx) else { return };
-            let (taken, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut raw.dropped_files)
-                .into_iter()
-                .partition(|_| timeline::spot_at(self, at, false).is_some() || drop::monitor_spot(self, at).is_some());
+            let (taken, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut raw.dropped_files).into_iter().partition(|_| {
+                !timeline::covered(ctx, at) && (timeline::spot_at(self, at, false).is_some() || drop::monitor_spot(self, at).is_some())
+            });
             raw.dropped_files = rest;
             let paths: Vec<String> = taken.iter().filter_map(path).collect();
             if !paths.is_empty() {

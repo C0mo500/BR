@@ -1517,6 +1517,8 @@ fn add_to_clips(s: &mut Session, p: &Value) -> Result<Value, String> {
     let clips: Vec<ClipId> = p["clips"].as_array().into_iter().flatten().filter_map(Value::as_u64).map(ClipId).collect();
     let mut targets: Vec<ClipId> = Vec::new();
     for c in clips {
+        // a background stands for its main clip
+        let c = if q.find_item(c).is_some_and(|(_, it)| main_track::is_background(it)) { main_track::main_of(q, c).unwrap_or(c) } else { c };
         let on_video = track_kind(q, c) == Some(TrackKind::Video);
         let target = match def.kind {
             filmcraft_project::EffectKind::Audio if on_video => linked_audio(q, c),

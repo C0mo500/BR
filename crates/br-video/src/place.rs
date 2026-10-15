@@ -223,6 +223,7 @@ fn place_items(
     };
     let mut clips = Vec::new();
     let mut to_main = Vec::new();
+    let mut others: Vec<(u64, Target)> = Vec::new();
     for item in items {
         let (picture, _) = s.project.source_streams(filmcraft_project::ItemId(*item));
         let go = match target {
@@ -235,12 +236,19 @@ fn place_items(
         };
         match go {
             Target::Main => to_main.push(*item),
-            Target::Overlay => clips.extend(overlay(s, *item, t, wanted_video, position, range)?),
-            _ => clips.extend(magnet::place_sound(s, *item, t, wanted_audio, range)?),
+            other => others.push((*item, other)),
         }
     }
+    // the main track first: what is dropped with it (a sound, an overlay) stays where it was
+    // dropped instead of hanging on the clips there before
     if !to_main.is_empty() {
         clips.extend(magnet::insert_range(s, &to_main, Some(t), range)?);
+    }
+    for (item, go) in others {
+        match go {
+            Target::Overlay => clips.extend(overlay(s, item, t, wanted_video, position, range)?),
+            _ => clips.extend(magnet::place_sound(s, item, t, wanted_audio, range)?),
+        }
     }
     Ok(clips)
 }

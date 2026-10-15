@@ -122,7 +122,12 @@ fn follow(s: &mut Session, rec: &Project, orphans: Orphans) -> bool {
     let r = if starts.is_empty() {
         amend_last(s, "Anker", |q, ctx| anchors::apply(q, ctx, plan))
     } else {
-        amend_last(s, "Anker", |q, ctx| crate::magnet::relayout(&before, q, &starts, ctx, orphans))
+        // the gap cannot close (a locked track): what hung on the removed clip still follows
+        amend_last(s, "Anker", |q, ctx| crate::magnet::relayout(&before, q, &starts, ctx, orphans)).or_else(|e| {
+            log::info!("the gap stays: {e}");
+            let plan = s.active_sequence().map(|now| anchors::plan(&before, now, orphans)).unwrap_or_default();
+            amend_last(s, "Anker", |q, ctx| anchors::apply(q, ctx, plan))
+        })
     };
     match r {
         Ok(_) => true,

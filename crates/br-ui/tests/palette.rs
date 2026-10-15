@@ -232,3 +232,38 @@ fn cmd_b_splits_and_backspace_deletes_capcut_s_way() {
     assert!(br_video::main_track::main_clips(app.fc.session.active_sequence().unwrap())[0].reverse);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// FilmCraft as a window with a data folder starts it: its keys as saved there, BR's added.
+fn film_with_data(dir: &std::path::Path) -> filmcraft_ui_egui::FilmcraftApp {
+    let mut session = br_video::Session::default();
+    session.prefs_path = Some(dir.join("preferences.json"));
+    session.shortcuts.set_dir(dir);
+    let mut fc = filmcraft_ui_egui::FilmcraftApp::new(session);
+    br_ui::keys::register(&mut fc);
+    br_ui::keys::install(&mut fc);
+    fc
+}
+
+#[test]
+fn capcut_is_set_once_and_the_user_s_keys_stay() {
+    let dir = std::env::temp_dir().join(format!("br-keys-data-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // the first start: CapCut
+    let mut fc = film_with_data(&dir);
+    assert_eq!(fc.session.shortcuts.preset, br_ui::keys::CAPCUT);
+    assert_eq!(fc.session.shortcuts.primary("br.video.split").as_deref(), Some("Cmd+B"));
+    // the user changes a key and saves the set under its name
+    fc.session.shortcuts.set("br.video.split", "Cmd+Shift+X", None, false, false).unwrap();
+    fc.session.shortcuts.save_preset(br_ui::keys::CAPCUT).unwrap();
+    drop(fc);
+    let mut fc = film_with_data(&dir);
+    assert_eq!(fc.session.shortcuts.primary("br.video.split").as_deref(), Some("Cmd+Shift+X"), "the user's CapCut stays theirs");
+    // FilmCraft's own set, chosen: it stays, also without the CapCut file
+    fc.session.shortcuts.load_preset(filmcraft_engine::shortcuts::DEFAULT_PRESET).unwrap();
+    let _ = fc.session.shortcuts.delete_preset(br_ui::keys::CAPCUT);
+    drop(fc);
+    let fc = film_with_data(&dir);
+    assert_eq!(fc.session.shortcuts.preset, filmcraft_engine::shortcuts::DEFAULT_PRESET, "the choice stays");
+    let _ = std::fs::remove_dir_all(&dir);
+}

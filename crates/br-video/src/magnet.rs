@@ -556,8 +556,10 @@ pub fn speed(s: &mut Session, clips: &[ClipId], speed: f64) -> R<Value> {
     let mut ids: Vec<ClipId> = Vec::new();
     let mut curved: Vec<u64> = Vec::new();
     for c in clips {
-        let first = crate::speed::curve_pieces(q, *c).first().copied().unwrap_or(*c);
-        if crate::speed::curve_of(q, first).is_some() && !curved.contains(&first.0) {
+        // a picture's curve (a sound piece on its own keeps its curve marks: it is just faster)
+        let picture = q.find_item(*c).is_some_and(|(t, _)| q.track(t).is_some_and(|t| t.kind == TrackKind::Video));
+        let first = if picture { crate::speed::curve_pieces(q, *c).first().copied().unwrap_or(*c) } else { *c };
+        if picture && crate::speed::curve_of(q, first).is_some() && !curved.contains(&first.0) {
             curved.push(first.0);
         }
         if !ids.contains(&first) {
