@@ -174,7 +174,7 @@ impl CutState {
 }
 
 /// A message in FilmCraft's toast (shown over the video pages).
-fn toast(app: &mut BrApp, ctx: &egui::Context, text: impl Into<String>) {
+pub(crate) fn toast(app: &mut BrApp, ctx: &egui::Context, text: impl Into<String>) {
     let text = text.into();
     log::info!("{text}");
     app.fc.toast = Some((text, ctx.input(|i| i.time)));
@@ -249,7 +249,7 @@ fn running_exports(app: &BrApp) -> Vec<u64> {
 
 /// Run one of BR's video commands (or FilmCraft's) on the video project; a failure is told in the
 /// toast.
-fn run(app: &mut BrApp, ctx: &egui::Context, id: &str, params: Value) -> Option<Value> {
+pub(crate) fn run(app: &mut BrApp, ctx: &egui::Context, id: &str, params: Value) -> Option<Value> {
     match br_video::execute_with(&mut app.fc.session, &mut app.video.watch, id, &params) {
         Ok(v) => Some(v),
         Err(e) => {
@@ -378,7 +378,7 @@ pub fn header_tools(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
 
 /// A tool in the row: FilmCraft's icon and a label (CapCut's row of tools), highlighted while its
 /// popover is open. Without a label it is an icon button.
-fn tool(ui: &mut Ui, t: &Theme, icon: Icon, text: &str, tip: &str, open: bool, enabled: bool) -> egui::Response {
+pub(crate) fn tool(ui: &mut Ui, t: &Theme, icon: Icon, text: &str, tip: &str, open: bool, enabled: bool) -> egui::Response {
     let color = if enabled { t.text } else { t.disabled };
     let galley = ui.painter().layout_no_wrap(text.to_string(), FontId::proportional(13.0), color);
     let w = if text.is_empty() { 30.0 } else { 8.0 + 16.0 + 6.0 + galley.size().x + 10.0 };

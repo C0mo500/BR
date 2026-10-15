@@ -461,8 +461,18 @@ fn chosen_clips(s: &Session, p: &Value) -> Vec<u64> {
 /// sound alone on a free sound track.
 fn place_media(s: &mut Session, items: &[u64], at: Option<filmcraft_time::Tick>) -> filmcraft_engine::Result<()> {
     if s.active_sequence().is_none() {
-        s.execute("file.newSequence", json!({"name": "Video", "fromItems": items}))?;
+        // the pictures make the video, in the first one's shape; sound alone goes under them
+        let (pictures, sounds): (Vec<u64>, Vec<u64>) = items.iter().partition(|i| s.project.source_streams(filmcraft_project::ItemId(**i)).0);
+        if pictures.is_empty() {
+            s.execute("file.newSequence", json!({"name": "Video", "fromItems": items}))?;
+            return prepare(s);
+        }
+        s.execute("file.newSequence", json!({"name": "Video", "fromItems": pictures}))?;
         prepare(s)?;
+        if !sounds.is_empty() {
+            s.set_playhead(filmcraft_time::Tick::ZERO);
+            magnet::insert(s, &sounds, None)?;
+        }
         return Ok(());
     }
     magnet::insert(s, items, at)?;

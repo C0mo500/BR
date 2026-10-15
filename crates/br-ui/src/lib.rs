@@ -19,6 +19,7 @@ pub mod desktop;
 pub mod headless;
 pub mod photo;
 mod style;
+pub mod timeline;
 pub mod video;
 
 use std::collections::HashMap;
@@ -114,6 +115,8 @@ pub struct BrApp {
     pub video: VideoState,
     /// The video pages' quick tools.
     pub cut: CutState,
+    /// BR's timeline on the Schnitt page.
+    pub timeline: timeline::TimelineState,
     /// Every font family the apps draw with was bound at the start of this frame.
     fonts_ok: bool,
     /// Screen rectangles of BR's controls from the last frame, by name (`page.foto`,
@@ -187,6 +190,7 @@ impl BrApp {
             photo: PhotoState::default(),
             video: VideoState::default(),
             cut: CutState::default(),
+            timeline: timeline::TimelineState::default(),
             fonts_ok: false,
             widgets: HashMap::new(),
             library,
@@ -321,6 +325,12 @@ impl BrApp {
             _ => {
                 if self.page == Page::Schnitt {
                     cut::toolbar(self, ui);
+                    timeline::show(self, ui);
+                    // BR's timeline is the Schnitt page's: FilmCraft must not dock its own again
+                    // when a sequence opens (Window ▸ Timeline still brings it back)
+                    if timeline::visible(self) {
+                        self.fc.session.events.retain(|e| !matches!(e, filmcraft_engine::Event::OpenSequence(_)));
+                    }
                 }
                 let area = video::ui(&mut self.fc, &mut self.video, ui);
                 cut::set_area(self, area);
