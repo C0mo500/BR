@@ -614,13 +614,26 @@ const MUSIC_SECONDS: f64 = 20.0;
 /// Pictures go on the main track with their sound on its sound track; sound alone goes on a free
 /// sound track at `at` (at the playhead without). Returns the new clips.
 pub fn insert(s: &mut Session, items: &[u64], at: Option<Tick>) -> R<Vec<u64>> {
+    insert_range(s, items, at, None)
+}
+
+/// [`insert`] of a part of the items: `range` is (media start, length), as a Source monitor's In
+/// and Out marks give it.
+pub fn insert_range(s: &mut Session, items: &[u64], at: Option<Tick>, range: Option<(Tick, Tick)>) -> R<Vec<u64>> {
+    let with_range = |mut p: Value| {
+        if let Some((from, len)) = range {
+            p["sourceIn"] = json!(from.0);
+            p["duration"] = json!(len.0);
+        }
+        p
+    };
     let sw = switches(s);
     if let (false, Some(at)) = (sw.linkage, at) {
         let (main_id, main_audio) = {
             let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
             (main_track::main_track_id(q).ok_or(EngineError::NoSequence)?, main_track::main_audio_track(q))
         };
-        let mut p = json!({"items": items, "track": main_id.0, "time": at.0, "insert": sw.magnet});
+        let mut p = with_range(json!({"items": items, "track": main_id.0, "time": at.0, "insert": sw.magnet}));
         if let Some(a) = main_audio {
             p["audioTrack"] = json!(a.0);
         }
@@ -635,12 +648,12 @@ pub fn insert(s: &mut Session, items: &[u64], at: Option<Tick>) -> R<Vec<u64>> {
     // first at the end of the main track (and its sound track), where they cut nothing
     let mut mains: Vec<ClipId> = Vec::new();
     for item in items {
-        let (has_video, has_audio) = s.project.source_streams(filmcraft_project::ItemId(*item));
+        let (has_video, _) = s.project.source_streams(filmcraft_project::ItemId(*item));
         let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
         let end = |t: Option<TrackId>| t.and_then(|t| q.track(t)).map(|t| t.end()).unwrap_or(Tick::ZERO);
         let placed = if has_video {
             let time = end(Some(main_id)).max(end(main_audio));
-            let mut p = json!({"item": item, "track": main_id.0, "time": time.0, "insert": false});
+            let mut p = with_range(json!({"item": item, "track": main_id.0, "time": time.0, "insert": false}));
             if let Some(a) = main_audio {
                 p["audioTrack"] = json!(a.0);
             }
@@ -649,17 +662,7 @@ pub fn insert(s: &mut Session, items: &[u64], at: Option<Tick>) -> R<Vec<u64>> {
             // sound alone: where asked (else at the playhead), on a sound track free there; it
             // then hangs on the main clip it starts on
             let time = at.unwrap_or_else(|| s.playhead());
-            let placed = s.execute("timeline.place", json!({"item": item, "audioTrack": "new", "time": time.0, "video": false, "insert": false}))?;
-            // a long piece is music (a bed under the video, not attached to a clip), a short one
-            // a sound effect on the clip it starts on
-            let clips: Vec<u64> = placed.get("clips").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_u64).collect();
-            let long = clips.iter().any(|c| {
-                s.active_sequence().and_then(|q| q.find_item(ClipId(*c))).is_some_and(|(_, it)| it.duration >= Tick::from_seconds_f64(MUSIC_SECONDS))
-            });
-            if has_audio && !clips.is_empty() {
-                s.execute("essentialSound.setType", json!({"clips": clips, "type": if long { "music" } else { "sfx" }}))?;
-            }
-            placed
+            json!({"clips": place_sound(s, *item, time, None, range)?})
         };
         let clips: Vec<u64> = placed.get("clips").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_u64).collect();
         if has_video {
@@ -701,6 +704,52 @@ pub fn insert(s: &mut Session, items: &[u64], at: Option<Tick>) -> R<Vec<u64>> {
         })?;
     }
     Ok(new_clips)
+}
+
+/// How long an item lasts when placed: its media (a still the default still length).
+pub(crate) fn item_length(s: &Session, item: u64, range: Option<(Tick, Tick)>) -> Tick {
+    if let Some((_, len)) = range {
+        return len;
+    }
+    filmcraft_engine::media_duration(&s.project, &s.media, filmcraft_project::ItemId(item))
+        .unwrap_or_else(|| s.prefs.timeline.still_duration(s.sequence_rate()))
+}
+
+/// A sound track other than the main clips' sound that is free from `t` for `len`: `wanted` if
+/// it is, else the first one (none: a new one is made).
+pub(crate) fn free_sound_track(q: &Sequence, t: Tick, len: Tick, wanted: Option<TrackId>) -> Option<TrackId> {
+    let main_audio = main_track::main_audio_track(q);
+    let range = TimeRange::new(t, len.max(Tick(1)));
+    let free = |tr: &filmcraft_project::Track| Some(tr.id) != main_audio && !tr.locked && tr.items.iter().all(|i| !i.range().overlaps(&range));
+    let wanted = wanted.and_then(|w| q.audio_tracks.iter().find(|tr| tr.id == w)).filter(|tr| free(tr)).map(|tr| tr.id);
+    wanted.or_else(|| q.audio_tracks.iter().find(|tr| free(tr)).map(|tr| tr.id))
+}
+
+/// A sound on its own at `t` on a free sound track (`track` if free), typed: a long piece is
+/// music (a bed under the video, not attached to a clip), a short one a sound effect on the clip
+/// it starts on. A picture's sound alone when the item has a picture too.
+pub(crate) fn place_sound(s: &mut Session, item: u64, t: Tick, track: Option<TrackId>, range: Option<(Tick, Tick)>) -> R<Vec<u64>> {
+    let (_, has_audio) = s.project.source_streams(filmcraft_project::ItemId(item));
+    if !has_audio {
+        return Err(other("die Datei hat keinen Ton"));
+    }
+    let len = item_length(s, item, range);
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let dest = free_sound_track(q, t, len, track).map_or(json!("new"), |id| json!(id.0));
+    let mut p = json!({"item": item, "audioTrack": dest, "time": t.0, "video": false, "insert": false});
+    if let Some((from, len)) = range {
+        p["sourceIn"] = json!(from.0);
+        p["duration"] = json!(len.0);
+    }
+    let placed = s.execute("timeline.place", p)?;
+    let clips: Vec<u64> = placed.get("clips").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_u64).collect();
+    let long = clips.iter().any(|c| {
+        s.active_sequence().and_then(|q| q.find_item(ClipId(*c))).is_some_and(|(_, it)| it.duration >= Tick::from_seconds_f64(MUSIC_SECONDS))
+    });
+    if !clips.is_empty() {
+        s.execute("essentialSound.setType", json!({"clips": clips, "type": if long { "music" } else { "sfx" }}))?;
+    }
+    Ok(clips)
 }
 
 /// Cut a clip in two at `t`: the clip and its sound and background (whatever FilmCraft's Linked

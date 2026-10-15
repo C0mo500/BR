@@ -29,6 +29,8 @@ const MAIN_H: f32 = 62.0;
 const OVERLAY_H: f32 = 32.0;
 const AUDIO_H: f32 = 30.0;
 const CAPTION_H: f32 = 22.0;
+/// The empty band above the rows, to drop overlays and titles into.
+const DROP_H: f32 = 26.0;
 const GAP: f32 = 3.0;
 /// How near an edge a press trims instead of moving.
 const EDGE_PX: f32 = 7.0;
@@ -51,6 +53,47 @@ pub struct TimelineState {
     drag: Option<Drag>,
     /// Waveforms being worked out in the background.
     peaks_pending: Arc<Mutex<HashSet<(ItemId, usize)>>>,
+    /// Where things were in the last frame, for drops (files from the file manager arrive
+    /// before the frame).
+    layout: Option<Layout>,
+}
+
+/// The timeline's geometry of one frame.
+#[derive(Clone, Debug)]
+struct Layout {
+    lane: Rect,
+    pps: f64,
+    scroll: f64,
+    rows: Vec<(RowKind, TrackId, Rect)>,
+    clips: Vec<(ClipId, Rect)>,
+}
+
+/// Where a drop at `p` lands on the timeline (as last drawn): onto a clip for an effect
+/// (`onto_clip`), else the main track, above it or among the sound tracks.
+pub(crate) fn spot_at(app: &BrApp, p: Pos2, onto_clip: bool) -> Option<crate::drop::Spot> {
+    use crate::drop::Spot;
+    if !visible(app) || app.timeline.full {
+        return None;
+    }
+    let l = app.timeline.layout.as_ref()?;
+    if !l.lane.contains(p) {
+        return None;
+    }
+    let t = (l.scroll + (p.x - l.lane.min.x) as f64 / l.pps).max(0.0);
+    if onto_clip {
+        return l.clips.iter().rev().find(|c| c.1.contains(p)).map(|(c, r)| Spot::Clip(*c, t, p.x - r.min.x < r.max.x - p.x));
+    }
+    let row = l.rows.iter().find(|r| r.2.min.y - GAP <= p.y && p.y < r.2.max.y + GAP);
+    Some(match row {
+        Some((RowKind::Main, _, _)) => Spot::Main(t),
+        Some((RowKind::Overlay, tr, _)) => Spot::Above(t, Some(*tr)),
+        Some((RowKind::Captions, _, _)) => Spot::Above(t, None),
+        Some((RowKind::Sound, tr, _)) => Spot::Sound(t, Some(*tr)),
+        None => match l.rows.iter().find(|r| r.0 == RowKind::Main) {
+            Some(m) if p.y < m.2.min.y => Spot::Above(t, None),
+            _ => Spot::Sound(t, None),
+        },
+    })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -242,7 +285,8 @@ fn rows(q: &Sequence, top: f32, left: f32, right: f32) -> Vec<Row> {
     let main = main_track::main_track_id(q);
     let main_audio = main_track::main_audio_track(q);
     let mut out = Vec::new();
-    let mut y = top;
+    // an empty band on top: something dropped there becomes an overlay on a track of its own
+    let mut y = top + DROP_H;
     let mut push = |kind: RowKind, track: TrackId, h: f32, label: String, out: &mut Vec<Row>| {
         out.push(Row { kind, track, rect: Rect::from_min_max(pos2(left, y), pos2(right, y + h)), label });
         y += h + GAP;
@@ -436,6 +480,30 @@ fn canvas(app: &mut BrApp, ui: &mut Ui, t: &Theme, rect: Rect) {
         }
     }
 
+    app.timeline.layout = Some(Layout {
+        lane,
+        pps: view.pps,
+        scroll: view.scroll,
+        rows: rows.iter().map(|r| (r.kind, r.track, Rect::from_min_max(pos2(lane_x, r.rect.min.y), r.rect.max))).collect(),
+        clips: hits.iter().filter(|h| h.2 != RowKind::Captions).map(|h| (h.0, h.1)).collect(),
+    });
+    // something dragged in (an asset, a project item, an effect, files from the file manager):
+    // where it would land, and on release the drop
+    let os_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
+    let over = if os_files { crate::drop::os_pointer(app, &ctx) } else { ui.input(|i| i.pointer.interact_pos()) };
+    if let Some(p) = over.filter(|p| lane.contains(*p)) {
+        let payload = if os_files { Some(crate::drop::Payload::Files(Vec::new())) } else { crate::drop::current(app, &ctx) };
+        if let Some(payload) = payload
+            && let Some(spot) = spot_at(app, p, payload.onto_clip())
+        {
+            drop_preview(&lane_painter, q, &view, &rows, &hits, spot);
+            if !os_files && crate::drop::released(&ctx) {
+                crate::drop::apply(app, &ctx, &payload, spot);
+                crate::drop::finish(&ctx);
+            }
+        }
+    }
+
     // a drag in progress: where it would land
     let pointer = ui.input(|i| i.pointer.interact_pos());
     let mut snap_x = None;
@@ -510,6 +578,55 @@ fn canvas(app: &mut BrApp, ui: &mut Ui, t: &Theme, rect: Rect) {
 
     // input
     interact(app, ui, &ctx, rect, &view, rr, &hits, &rows);
+}
+
+/// Where a drop would land: the cut it goes in at, the row it goes on, the clip it goes onto.
+fn drop_preview(p: &egui::Painter, q: &Sequence, view: &View, rows: &[Row], hits: &[(ClipId, Rect, RowKind)], spot: crate::drop::Spot) {
+    use crate::drop::Spot;
+    let lane = view.lane;
+    let band = |p: &egui::Painter, y0: f32, y1: f32, t: f64| {
+        let x = view.x(Tick::from_seconds_f64(t));
+        let r = Rect::from_min_max(pos2(x, y0), pos2((x + (2.0 * view.pps) as f32).min(lane.max.x), y1));
+        p.rect_filled(r, CornerRadius::same(4), Color32::from_white_alpha(36));
+        p.rect_stroke(r, CornerRadius::same(4), Stroke::new(1.5, ACCENT), StrokeKind::Inside);
+    };
+    let main = rows.iter().find(|r| r.kind == RowKind::Main);
+    match spot {
+        Spot::Main(t) => {
+            let cuts: Vec<Tick> =
+                main_track::main_clips(q).iter().map(|m| m.start).chain(main_track::main_clips(q).last().map(|m| m.end())).collect();
+            let at = cuts.into_iter().min_by(|a, b| (a.seconds() - t).abs().total_cmp(&(b.seconds() - t).abs())).unwrap_or(Tick::ZERO);
+            if let Some(row) = main {
+                let x = view.x(at);
+                p.line_segment([pos2(x, row.rect.min.y - 4.0), pos2(x, row.rect.max.y + 4.0)], Stroke::new(3.0, ACCENT));
+            }
+        }
+        Spot::Above(t, track) => {
+            let row = rows.iter().find(|r| Some(r.track) == track);
+            let (y0, y1) = match (row, main) {
+                (Some(r), _) => (r.rect.min.y, r.rect.max.y),
+                (None, Some(m)) => (m.rect.min.y - OVERLAY_H.min(m.rect.min.y - lane.min.y).max(8.0), m.rect.min.y - 2.0),
+                _ => (lane.min.y, lane.min.y + OVERLAY_H),
+            };
+            band(p, y0, y1, t);
+        }
+        Spot::Sound(t, track) => {
+            let row = rows.iter().find(|r| Some(r.track) == track && r.kind == RowKind::Sound);
+            let last = rows.iter().rev().find(|r| r.kind == RowKind::Sound).or(main);
+            let (y0, y1) = match (row, last) {
+                (Some(r), _) => (r.rect.min.y, r.rect.max.y),
+                (None, Some(l)) => (l.rect.max.y + GAP, (l.rect.max.y + GAP + AUDIO_H).min(lane.max.y)),
+                _ => (lane.max.y - AUDIO_H, lane.max.y),
+            };
+            band(p, y0, y1, t);
+        }
+        Spot::Clip(c, _, _) => {
+            if let Some((_, r, _)) = hits.iter().find(|h| h.0 == c) {
+                p.rect_stroke(*r, CornerRadius::same(4), Stroke::new(2.5, ACCENT), StrokeKind::Outside);
+            }
+        }
+        Spot::Picture(..) | Spot::Program => {}
+    }
 }
 
 fn paint_ruler(p: &egui::Painter, t: &Theme, r: Rect, view: &View, rate: filmcraft_time::FrameRate) {

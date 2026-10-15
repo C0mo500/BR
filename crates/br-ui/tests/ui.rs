@@ -305,10 +305,15 @@ fn shortcuts_go_to_the_app_on_the_page() {
 #[test]
 fn a_page_keeps_the_layout_it_was_left_with() {
     let (mut app, mut d) = video_app();
+    use filmcraft_ui_egui::dock::{DockNode, PanelKind, SplitSize};
     let mine = br_ui::video::schnitt_layout();
-    let filmcraft_ui_egui::dock::DockNode::Split { a, .. } = mine.clone() else { panic!("a split") };
-    // the user changes the Schnitt page's layout (here: just its top half)
-    app.fc.ui.dock = *a;
+    // the user changes the Schnitt page's layout (here: FilmCraft's Project panel docked left)
+    app.fc.ui.dock = DockNode::Split {
+        vertical: false,
+        size: SplitSize::FixedA(300.0),
+        a: Box::new(DockNode::Tabs { panels: vec![PanelKind::Project], active: 0 }),
+        b: Box::new(mine),
+    };
     let changed = app.fc.ui.dock.clone();
     d.click(&mut app, "page.farbe").unwrap();
     assert!(d.settle(&mut app, SETTLE));

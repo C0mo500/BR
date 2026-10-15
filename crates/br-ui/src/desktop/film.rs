@@ -63,7 +63,7 @@ pub fn hooks() -> HostHooks {
     // Interface Language ▸ System Language
     h.system_languages = Some(Box::new(|| sys_locale::get_locales().collect()));
     // where a file dropped from the file manager lands (winit reports no motion during an OS drag)
-    h.cursor_screen_position = Some(Box::new(filmcraft_platform::cursor::cursor_screen_position));
+    h.cursor_screen_position = Some(Box::new(super::pointer::screen_position));
     h
 }
 

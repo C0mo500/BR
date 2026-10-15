@@ -756,6 +756,7 @@ dependencies = [
  "rfd",
  "serde_json",
  "sys-locale",
+ "x11rb",
  "zbus",
 ]
 

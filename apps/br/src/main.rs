@@ -446,6 +446,7 @@ fn window(args: &[String], logger: Option<&'static logging::AppLogger>) -> Resul
                 }
                 // FilmCraft in the window: dialogs, the GPU, sound
                 br_ui::desktop::film::attach(&mut app.fc, cc);
+                app.cursor = Some(br_ui::desktop::pointer::screen_position);
                 // Settings ▸ General ▸ At Startup (when no video files are given)
                 if videos.is_empty() && !demo {
                     br_ui::desktop::film::at_startup(&mut app.fc);

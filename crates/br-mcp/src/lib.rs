@@ -280,6 +280,7 @@ const VIDEO_TOOLS: &[(&str, &str)] = &[
     ("br_video_state", "br.video.state"),
     ("br_video_new", "br.video.new"),
     ("br_video_add", "br.video.add"),
+    ("br_video_place", "br.video.place"),
     ("br_video_split", "br.video.split"),
     ("br_video_delete", "br.video.delete"),
     ("br_video_speed", "br.video.speed"),
@@ -345,6 +346,14 @@ pub fn video_tools() -> Vec<Value> {
             "Import video, sound or image files. Pictures go one after another on the main track: at its end, or inserted at the cut nearest to the playhead (`at`: playhead) or to `at` seconds; nothing is cut in two. Sound alone goes on a sound track at the playhead (20 s or longer: as music). One undo step.",
             json!({"paths": {"type": "array", "items": {"type": "string"}, "description": "Files (absolute paths)"}, "at": {"description": "end (default), playhead, or seconds", "oneOf": [{"type": "string", "enum": ["end", "playhead"]}, {"type": "number", "minimum": 0}]}}),
             &["paths"],
+            false,
+        ),
+        tool(
+            "br_video_place",
+            "Place media",
+            "Put files (or project items) where a drag would drop them: target main inserts pictures at the cut of the main track nearest `seconds` (default: the playhead; nothing is cut in two); overlay puts them above the main track at `seconds` on a free track (`track`: the one wanted, e.g. V2), at `position` ([x, y] in 0…1 of the picture); audio puts the sound alone on a free sound track (20 s or longer: music, else a sound effect on the clip it starts on); auto: pictures on the main track (or the overlay track named), sound alone on a sound track. Subtitle files become captions. sourceIn/duration (seconds) take a part. One undo step.",
+            json!({"paths": {"type": "array", "items": {"type": "string"}, "description": "Files (absolute paths)"}, "items": {"type": "array", "items": {"type": "integer"}, "description": "Project items already imported"}, "target": {"type": "string", "enum": ["auto", "main", "overlay", "audio"]}, "seconds": {"type": "number", "minimum": 0}, "track": {"oneOf": [{"type": "string"}, {"type": "integer"}]}, "position": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}, "sourceIn": {"type": "number", "minimum": 0}, "duration": {"type": "number", "exclusiveMinimum": 0}}),
+            &[],
             false,
         ),
         tool(
@@ -539,8 +548,8 @@ pub fn video_tools() -> Vec<Value> {
         tool(
             "br_video_transition",
             "Transition",
-            "A dissolve at the cuts between the given (or selected) clips; without either, at every cut of the main track. Cuts that have one keep it.",
-            json!({"clips": clips_prop()}),
+            "A transition (default: a dissolve; `effect`: any video transition from br_video_schema kind videoTransition) at the cuts between the given (or selected) clips; without either, at every cut of the main track. Cuts that have one keep it.",
+            json!({"clips": clips_prop(), "effect": {"type": "string"}}),
             &[],
             false,
         ),

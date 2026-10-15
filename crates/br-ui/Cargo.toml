@@ -44,6 +44,8 @@ whisper = ["br-video/whisper"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { workspace = true }
+# where the pointer is during a drag from the file manager (winit reports nothing then)
+x11rb = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { workspace = true }

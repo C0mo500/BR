@@ -57,13 +57,19 @@ fn split(vertical: bool, size: SplitSize, a: DockNode, b: DockNode) -> DockNode 
     DockNode::Split { vertical, size, a: Box::new(a), b: Box::new(b) }
 }
 
-/// CapCut's arrangement from FilmCraft's panels: media and effects on the left, the picture in the
-/// middle. The timeline under them and the inspector on the right are BR's ([`crate::timeline`],
-/// [`crate::inspector`]); FilmCraft's own are their "Profi" and "Voll" views, and the Window menu
-/// docks them again.
+/// CapCut's arrangement: the picture in the middle, FilmCraft's Program monitor (the Source
+/// monitor shares its place: a double-clicked clip opens there). The asset bar on the left, the
+/// timeline under it and the inspector on the right are BR's ([`crate::assets`],
+/// [`crate::timeline`], [`crate::inspector`]); FilmCraft's own panels are their "Profi" and
+/// "Voll" views, and the Window menu docks them again.
 pub fn schnitt_layout() -> DockNode {
     use PanelKind::*;
-    // the Source monitor shares the picture's place (a double-clicked clip opens there)
+    tabs(&[Program, Source])
+}
+
+/// The Schnitt layout with FilmCraft's media panels on the left (before BR's asset bar).
+fn schnitt_layout_v3() -> DockNode {
+    use PanelKind::*;
     split(false, SplitSize::FixedA(340.0), tabs(&[Project, Effects, EssentialGraphics, Text, MediaBrowser]), tabs(&[Program, Source]))
 }
 
@@ -125,7 +131,7 @@ pub fn new_app(mut session: br_video::Session) -> FilmcraftApp {
     // its first frame (the saved workspaces stay in its Window menu)
     fc.workspaces.current.clear();
     let layout_now = serde_json::to_value(schnitt_layout()).unwrap_or_default();
-    let old = [schnitt_layout_v1(), schnitt_layout_v2()].map(|l| serde_json::to_value(l).unwrap_or_default());
+    let old = [schnitt_layout_v1(), schnitt_layout_v2(), schnitt_layout_v3()].map(|l| serde_json::to_value(l).unwrap_or_default());
     match fc.workspaces.saved.iter_mut().find(|w| w.name == SCHNITT_WORKSPACE) {
         // an earlier version's layout, unchanged by the user: BR's timeline and inspector take
         // the place of FilmCraft's panels

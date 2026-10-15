@@ -88,10 +88,13 @@ pub const SPEEDS: [f64; 7] = [0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0];
 
 /// What an open file dialog is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PickFor {
+pub(crate) enum PickFor {
     Media,
     Music,
     ExportFolder,
+    /// Media into the project only (the asset bar), to be dragged in where wanted.
+    Import,
+    ImportSound,
 }
 
 /// A video export FilmCraft runs (a job in its session).
@@ -119,7 +122,7 @@ pub struct CutState {
     pub fill: bool,
     /// The start screen was left without a video ("Leerer Editor").
     pub start_dismissed: bool,
-    picking: Option<(PickFor, Receiver<Vec<PathBuf>>)>,
+    pub(crate) picking: Option<(PickFor, Receiver<Vec<PathBuf>>)>,
     /// FilmCraft's looks, read once.
     looks: Option<Vec<(String, String)>>,
     /// Where FilmCraft was drawn this frame (the start screen covers it).
@@ -456,7 +459,7 @@ fn tools(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
     let (cuts, linked) = {
         let s = &app.fc.session;
         let q = s.active_sequence();
-        let main = q.and_then(|q| q.video_tracks.first()).map_or(0, |t| t.items.len());
+        let main = q.map_or(0, |q| br_video::main_track::main_clips(q).len());
         let linked = q.is_some_and(|q| s.state.selection.iter().any(|c| q.find_item(*c).is_some_and(|(_, it)| it.link.is_some())));
         (main >= 2, linked)
     };
@@ -532,10 +535,12 @@ fn tools(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
 
 // ── file dialogs ────────────────────────────────────────────────────────────────────────────────
 
-fn pick(app: &mut BrApp, ctx: &egui::Context, what: PickFor) {
+pub(crate) fn pick(app: &mut BrApp, ctx: &egui::Context, what: PickFor) {
     let (kind, title, start) = match what {
         PickFor::Media => (Pick::Media, "Medien hinzufügen", desktop::import_dir()),
         PickFor::Music => (Pick::Music, "Musik hinzufügen", desktop::import_dir()),
+        PickFor::Import => (Pick::Media, "Medien importieren", desktop::import_dir()),
+        PickFor::ImportSound => (Pick::Music, "Musik oder Ton importieren", desktop::import_dir()),
         PickFor::ExportFolder => (Pick::Folder, "Export-Ordner", Some(app.cut.export_dir.clone()).filter(|d| d.is_dir())),
     };
     match desktop::pick(ctx, kind, title, start) {
@@ -568,6 +573,10 @@ fn poll_pick(app: &mut BrApp, ctx: &egui::Context) {
                 app.cut.export_dir = dir;
             }
         }
+        PickFor::Import | PickFor::ImportSound if !paths.is_empty() => {
+            run(app, ctx, "file.import", json!({"paths": paths}));
+        }
+        PickFor::Import | PickFor::ImportSound => {}
     }
 }
 

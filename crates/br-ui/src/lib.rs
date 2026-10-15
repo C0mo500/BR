@@ -13,9 +13,11 @@
 //! (FilmCraft's, owned by the `FilmcraftApp`). Both apps' `logic()` runs every frame on every
 //! page (rendering, importing, saving go on); only the app on the page gets keyboard shortcuts.
 
+pub mod assets;
 pub mod control;
 pub mod cut;
 pub mod desktop;
+pub mod drop;
 pub mod headless;
 pub mod inspector;
 pub mod photo;
@@ -120,6 +122,8 @@ pub struct BrApp {
     pub timeline: timeline::TimelineState,
     /// BR's inspector on the Schnitt page.
     pub inspector: inspector::InspectorState,
+    /// BR's asset bar on the Schnitt page.
+    pub assets: assets::AssetState,
     /// Every font family the apps draw with was bound at the start of this frame.
     fonts_ok: bool,
     /// Screen rectangles of BR's controls from the last frame, by name (`page.foto`,
@@ -133,6 +137,9 @@ pub struct BrApp {
     pending: Vec<control::Pending>,
     /// Whose look the window has (`true`: FilmCraft's, `false`: LightCraft's).
     styled: Option<bool>,
+    /// The pointer on the screen in physical pixels, where the platform can say during a drag
+    /// from the file manager (X11; winit reports nothing then).
+    pub cursor: Option<fn() -> Option<(i32, i32)>>,
 }
 
 /// The services every BR window has: writing files and PNG screenshots. A desktop window adds
@@ -195,6 +202,8 @@ impl BrApp {
             cut: CutState::default(),
             timeline: timeline::TimelineState::default(),
             inspector: inspector::InspectorState::default(),
+            assets: assets::AssetState::default(),
+            cursor: None,
             fonts_ok: false,
             widgets: HashMap::new(),
             library,
@@ -293,6 +302,18 @@ impl BrApp {
         if cut::start_screen_visible(self) {
             let paths: Vec<String> = std::mem::take(&mut raw.dropped_files).iter().filter_map(path).collect();
             cut::open_files(self, ctx, paths);
+        } else if timeline::visible(self) {
+            // onto BR's timeline or the Program monitor: placed CapCut's way; elsewhere FilmCraft
+            // imports them into the project
+            let Some(at) = drop::os_pointer(self, ctx) else { return };
+            let (taken, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut raw.dropped_files)
+                .into_iter()
+                .partition(|_| timeline::spot_at(self, at, false).is_some() || drop::monitor_spot(self, at).is_some());
+            raw.dropped_files = rest;
+            let paths: Vec<String> = taken.iter().filter_map(path).collect();
+            if !paths.is_empty() {
+                let _ = drop::os_files(self, ctx, paths, at);
+            }
         } else if self.page == Page::Foto {
             let (videos, photos): (Vec<_>, Vec<_>) =
                 std::mem::take(&mut raw.dropped_files).into_iter().partition(|f| path(f).is_some_and(|p| br_video::is_video_file(&p)));
@@ -330,6 +351,7 @@ impl BrApp {
                 if self.page == Page::Schnitt {
                     cut::toolbar(self, ui);
                     timeline::show(self, ui);
+                    assets::show(self, ui);
                     inspector::show(self, ui);
                     // BR's timeline is the Schnitt page's: FilmCraft must not dock its own again
                     // when a sequence opens (Window ▸ Timeline still brings it back)
@@ -340,6 +362,7 @@ impl BrApp {
                 let area = video::ui(&mut self.fc, &mut self.video, ui);
                 cut::set_area(self, area);
                 cut::show(self, &ctx);
+                drop::monitor(self, &ctx);
                 cut::draw_toast(self, &ctx);
                 // FilmCraft switched its own mode (File ▸ Export ▸ Media…, Import mode's cards):
                 // show the page that has it

@@ -53,6 +53,7 @@ arboard = "3"
 # setting (XDG settings portal) and the display's ICC profile (colord); pure Rust, the version
 # accesskit already brings in, pinned to it.
 zbus = "=5.19.0"
+x11rb = { version = "0.13.2", default-features = false }
 # macOS: the profile of the screen showing the window (safe AppKit bindings; wgpu uses the same)
 objc2 = { version = "0.6", default-features = false, features = ["std"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSColorSpace", "NSResponder", "NSScreen", "NSWindow"] }

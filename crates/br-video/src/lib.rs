@@ -10,6 +10,7 @@
 //! |---|---|
 //! | `br.video.new` | a new video in a social format (9:16, 16:9, 1:1, 4:5) |
 //! | `br.video.add` | import files and put them one after another on the main track (at its end or a cut) |
+//! | `br.video.place` | media where they are dropped: main track at a cut, overlay, sound, captions |
 //! | `br.video.split` | cut the selected clip (else the main clip) at the playhead |
 //! | `br.video.delete` | delete the selected clips; the main track closes up, what hung on them goes too |
 //! | `br.video.speed` | play the selected clips faster or slower, the rest moves up or on |
@@ -41,6 +42,7 @@ pub mod anchors;
 pub mod inspect;
 pub mod magnet;
 pub mod main_track;
+pub mod place;
 pub mod reconcile;
 pub mod speech;
 
@@ -167,6 +169,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         summary: "Import files and put them one after another on the main track: at its end, or at the cut nearest to the playhead (or `at` seconds); nothing is cut in two",
     },
     CommandInfo {
+        id: "br.video.place",
+        params: r#"{"paths":[str]?,"items":[id]?,"target":"auto|main|overlay|audio"="auto","seconds":f64?,"track":"V2|A3|main"|id?,"position":[x,y]?,"sourceIn":f64?,"duration":f64?}"#,
+        summary: "Put files (or project items) where they were dropped: a picture onto the main track at the cut nearest `seconds` (default: the playhead), above it as an overlay on a free track at `position` (0…1 of the picture), sound alone on a free sound track (long: music, short: a sound effect), subtitles as captions; one undo step",
+    },
+    CommandInfo {
         id: "br.video.split",
         params: r#"{"clip":id?,"seconds":f64?}"#,
         summary: "Cut a clip (the selected one, else the main clip) at the playhead (or `seconds`); titles and music stay whole",
@@ -243,8 +250,8 @@ pub const COMMANDS: &[CommandInfo] = &[
     },
     CommandInfo {
         id: "br.video.transition",
-        params: r#"{"clips":[id]?}"#,
-        summary: "A dissolve at the cuts between the selected clips (every cut of the main track without a selection)",
+        params: r#"{"clips":[id]?,"effect":"cross_dissolve|dip_to_black|…"?}"#,
+        summary: "A transition (default: a dissolve) at the cuts between the selected clips (every cut of the main track without a selection)",
     },
     CommandInfo {
         id: "br.video.inspect",
@@ -488,7 +495,7 @@ fn chosen_clips(s: &Session, p: &Value) -> Vec<u64> {
 /// is none): one after another at the end of the main track, or inserted at the cut of the main
 /// track nearest to `at` (nothing is cut in two). Pictures go on the main track with their sound;
 /// sound alone on a free sound track.
-fn place_media(s: &mut Session, items: &[u64], at: Option<filmcraft_time::Tick>) -> filmcraft_engine::Result<()> {
+pub(crate) fn place_media(s: &mut Session, items: &[u64], at: Option<filmcraft_time::Tick>) -> filmcraft_engine::Result<()> {
     if s.active_sequence().is_none() {
         // the pictures make the video, in the first one's shape; sound alone goes under them
         let (pictures, sounds): (Vec<u64>, Vec<u64>) = items.iter().partition(|i| s.project.source_streams(filmcraft_project::ItemId(**i)).0);
@@ -608,7 +615,7 @@ fn opt_f64(cmd: &str, p: &Value, key: &str) -> Result<Option<f64>, String> {
 }
 
 /// The ids of a list of numbers in `v[key]`.
-fn ids(v: &Value, key: &str) -> Vec<u64> {
+pub(crate) fn ids(v: &Value, key: &str) -> Vec<u64> {
     v.get(key).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default()
 }
 
@@ -629,16 +636,6 @@ fn tracks<'a>(seq: &'a Value, kind: &str) -> impl Iterator<Item = &'a Value> {
 /// The clips on a track.
 fn items(track: &Value) -> impl Iterator<Item = &Value> {
     track.get("items").and_then(Value::as_array).into_iter().flatten()
-}
-
-/// Where the last clip of a track ends, in ticks (0 for an empty or missing track).
-fn track_end(track: Option<&Value>) -> i64 {
-    track.map(|t| items(t).filter_map(|c| c.get("end").and_then(Value::as_i64)).max().unwrap_or(0)).unwrap_or(0)
-}
-
-/// The main track: the first video track.
-fn main_track(seq: &Value) -> Option<&Value> {
-    tracks(seq, "video").next()
 }
 
 fn playhead(seq: &Value) -> i64 {
@@ -1005,7 +1002,7 @@ fn execute_br(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
                     return Err(filmcraft_engine::EngineError::Other(format!("{path} ließ sich nicht lesen")));
                 };
                 // as long as the video (the main track), never longer: music must not add black
-                let end = track_end(main_track(&s.execute("sequence.inspect", json!({}))?));
+                let end = s.active_sequence().map_or(0, |q| magnet::picture_end(q).0);
                 let mut q = json!({"item": item, "audioTrack": "new", "time": 0, "video": false});
                 if end > 0 {
                     q["duration"] = json!(end);
@@ -1117,21 +1114,15 @@ fn execute_br(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
                 _ => s.state.selection.iter().map(|c| c.0).collect(),
             };
             // the cuts of the main track: where one clip ends and the next begins
-            let seq = inspect(s)?;
-            let mut main: Vec<(u64, i64, i64)> = main_track(&seq)
-                .into_iter()
-                .flat_map(items)
-                .filter_map(|c| Some((c.get("clip")?.as_u64()?, c.get("start")?.as_i64()?, c.get("end")?.as_i64()?)))
-                .collect();
+            let (mut main, has_one): (Vec<(u64, i64, i64)>, Vec<u64>) = {
+                let q = s.active_sequence().ok_or_else(|| err(id, "no video yet"))?;
+                let track = main_track::main_track_id(q).and_then(|t| q.track(t));
+                let main = track.map(|t| t.items.iter().map(|it| (it.id.0, it.start.0, it.end().0)).collect()).unwrap_or_default();
+                // a cut that has a transition keeps it
+                let has_one = track.map(|t| t.transitions.iter().filter_map(|x| x.from.map(|c| c.0)).collect()).unwrap_or_default();
+                (main, has_one)
+            };
             main.sort_by_key(|c| c.1);
-            // a cut that has a transition keeps it
-            let has_one: Vec<u64> = main_track(&seq)
-                .and_then(|t| t.get("transitions"))
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|x| x.get("from").and_then(Value::as_u64))
-                .collect();
             let cuts: Vec<u64> = main
                 .windows(2)
                 .filter(|w| w[0].2 == w[1].1 && (chosen.is_empty() || chosen.contains(&w[0].0) || chosen.contains(&w[1].0)))
@@ -1142,9 +1133,19 @@ fn execute_br(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
                 return Err(err(id, "kein Schnitt zwischen zwei Clips ohne Übergang"));
             }
             let n = cuts.len();
+            let effect = p.get("effect").and_then(Value::as_str).map(str::to_string);
+            if let Some(e) = &effect
+                && filmcraft_project::vtransition::find_transition(e, filmcraft_project::EffectKind::VideoTransition).is_none()
+            {
+                return Err(err(id, format!("unknown transition `{e}` (br.video.schema kind videoTransition)")));
+            }
             s.edit_group("Übergänge", |s| {
                 for clip in cuts {
-                    s.execute("sequence.applyVideoTransition", json!({"clip": clip, "edge": "out"}))?;
+                    let mut q = json!({"clip": clip, "edge": "out"});
+                    if let Some(e) = &effect {
+                        q["effect"] = json!(e);
+                    }
+                    s.execute("sequence.applyVideoTransition", q)?;
                 }
                 Ok(())
             })
@@ -1228,6 +1229,7 @@ fn execute_br(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
         }
         "br.video.state" => state(s),
         "br.video.inspect" => inspect::inspect(s, p),
+        "br.video.place" => place::place(s, p).map_err(|e| err(id, e)),
         "br.video.set" => inspect::set(s, p).map_err(|e| err(id, e)),
         "br.video.keyframe" => inspect::keyframe(s, p).map_err(|e| err(id, e)),
         "br.video.effect" => inspect::effect(s, p).map_err(|e| err(id, e)),

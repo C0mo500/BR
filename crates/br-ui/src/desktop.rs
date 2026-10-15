@@ -19,6 +19,7 @@ pub mod audio_in;
 mod colord;
 mod editors;
 pub mod film;
+pub mod pointer;
 pub mod prefs;
 #[cfg(target_os = "macos")]
 mod screen_profile;
