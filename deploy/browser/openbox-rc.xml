@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Openbox für BR im Browser: das BR-Fenster füllt den Bildschirm ohne Rahmen; Dialoge lassen
-     sich verschieben. Kein Desktop-Menü, keine Tastenkürzel: auf diesem Bildschirm gibt es nur BR.
+<!-- Openbox für shnyp im Browser: das shnyp-Fenster füllt den Bildschirm ohne Rahmen; Dialoge lassen
+     sich verschieben. Kein Desktop-Menü, keine Tastenkürzel: auf diesem Bildschirm gibt es nur shnyp.
      Keine Klick-Belegung im Kontext "Frame": die fängt jeden Klick ab, statt ihn an das Fenster
      weiterzugeben (nur "Client" gibt ihn weiter). -->
 <openbox_config xmlns="http://openbox.org/3.4/rc">
@@ -43,10 +43,10 @@
     </context>
   </mouse>
   <applications>
-    <!-- nur das Hauptfenster (Titel beim Öffnen: "BR"); ein zweites Fenster aus dem Pro-Modus
-         behält Rahmen und Schließen-Knopf. "below": Dialoge bleiben über BR, auch nach einem
-         Klick auf BR – sonst verschwände ein Datei-Dialog hinter dem bildschirmfüllenden Fenster. -->
-    <application class="br" title="BR" type="normal">
+    <!-- nur das Hauptfenster (Titel beim Öffnen: "shnyp"); ein zweites Fenster aus dem Pro-Modus
+         behält Rahmen und Schließen-Knopf. "below": Dialoge bleiben über shnyp, auch nach einem
+         Klick auf shnyp – sonst verschwände ein Datei-Dialog hinter dem bildschirmfüllenden Fenster. -->
+    <application class="shnyp" title="shnyp" type="normal">
       <decor>no</decor>
       <maximized>yes</maximized>
       <layer>below</layer>

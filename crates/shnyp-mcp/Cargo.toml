@@ -1,0 +1,23 @@
+[package]
+name = "shnyp-mcp"
+description = "shnyp mcp: shnyp for AI agents over the Model Context Protocol (LightCraft's MCP server plus typed shnyp_* photo and shnyp_video_* video tools on FilmCraft)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+shnyp-photo = { workspace = true }
+shnyp-video = { workspace = true }
+lightcraft-codecs = { workspace = true }
+lightcraft-engine = { workspace = true }
+lightcraft-mcp = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+filmcraft-speech = { workspace = true }
+filmcraft-project = { workspace = true }
+
+[lints]
+workspace = true

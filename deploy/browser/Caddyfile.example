@@ -1,13 +1,13 @@
-# BR im Browser hinter Caddy: HTTPS (Let's Encrypt) und Login.
+# shnyp im Browser hinter Caddy: HTTPS (Let's Encrypt) und Login.
 # Passwort-Hash erzeugen: caddy hash-password   (Caddy ab 2.8 schreibt die Direktive basic_auth)
 
-br.example.org {
+shnyp.example.org {
 	basicauth {
 		ich $2a$14$HASH_VON_caddy_hash-password
 	}
 	# noVNC und seine WebSocket-Verbindung
 	handle_path /novnc/* {
-		# Nur die eigene Seite darf noVNC öffnen und die Verbindung zu BR aufbauen: der Browser
+		# Nur die eigene Seite darf noVNC öffnen und die Verbindung zu shnyp aufbauen: der Browser
 		# schickt den Login auch mit, wenn eine fremde Webseite es versucht.
 		@fremd {
 			header Origin *
@@ -27,11 +27,11 @@ br.example.org {
 	}
 }
 
-# Oder unter einem Pfad einer bestehenden Domain, z. B. https://example.org/br/ :
+# Oder unter einem Pfad einer bestehenden Domain, z. B. https://example.org/shnyp/ :
 #
 # example.org {
-# 	redir /br /br/
-# 	handle_path /br/* {
+# 	redir /shnyp /shnyp/
+# 	handle_path /shnyp/* {
 # 		basicauth {
 # 			ich $2a$14$HASH
 # 		}

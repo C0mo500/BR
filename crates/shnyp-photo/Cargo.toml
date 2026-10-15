@@ -1,0 +1,19 @@
+[package]
+name = "shnyp-photo"
+description = "shnyp Foto: the simple photo editing layer (Looks, simple sliders, formats, export presets) on LightCraft's engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lightcraft-engine = { workspace = true }
+lightcraft-geom = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+lightcraft-raster = { workspace = true }
+
+[lints]
+workspace = true

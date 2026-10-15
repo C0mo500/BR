@@ -1,0 +1,22 @@
+[Unit]
+Description=shnyp im Browser: Seite, Foto-Upload und Export-Download
+After=network.target
+
+[Service]
+Type=simple
+User=shnyp
+Group=shnyp
+EnvironmentFile=/etc/shnyp-web.env
+Environment=HOME=/srv/shnyp
+ExecStart=/usr/bin/python3 /opt/shnyp/share/shnyp-dateien.py
+Restart=always
+RestartSec=2
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/srv/shnyp
+
+[Install]
+WantedBy=multi-user.target
