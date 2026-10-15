@@ -417,7 +417,7 @@ fn deleting_a_main_clip_in_shnyp_s_timeline_takes_its_overlay_and_title_and_one_
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// The pictures of the README (run by hand: `SHNYP_DOCS_DIR=docs/images cargo test -p shnyp-ui --test
+/// The pictures of the README (run by hand: `SHNYP_DOCS_DIR=$PWD/docs/images cargo test -p shnyp-ui --test
 /// acceptance docs -- --ignored`): a video from the demo photos with a title, music, captions and
 /// beats; the start screen; the command search.
 #[test]
