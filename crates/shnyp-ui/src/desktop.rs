@@ -132,7 +132,9 @@ fn own_folders(platform: Platform, env: impl Fn(&str) -> Option<OsString>) -> Ve
     dirs
 }
 
-/// Each `shnyp` folder takes over the `BR` folder beside it, when it is not there yet itself.
+/// Each `shnyp` folder takes over the `BR` folder beside it, when it is not there yet itself; the
+/// old name then links to the new folder, so paths saved while shnyp was called BR (a voice-over
+/// recorded into the data folder, the recent projects, auto-saves) still lead to their files.
 fn adopt(dirs: Vec<PathBuf>) -> Vec<(PathBuf, PathBuf)> {
     let mut moved = Vec::new();
     for new in dirs {
@@ -143,12 +145,33 @@ fn adopt(dirs: Vec<PathBuf>) -> Vec<(PathBuf, PathBuf)> {
         match std::fs::rename(&old, &new) {
             Ok(()) => {
                 log::info!("{} is now {}", old.display(), new.display());
+                if let Err(e) = link_back(&old, &new) {
+                    log::warn!("{} does not lead to {}: {e}", old.display(), new.display());
+                }
                 moved.push((old, new));
             }
             Err(e) => log::warn!("{} could not become {}: {e}", old.display(), new.display()),
         }
     }
     moved
+}
+
+#[cfg(unix)]
+fn link_back(old: &Path, new: &Path) -> std::io::Result<()> {
+    // relative: it keeps working when the folder above moves
+    std::os::unix::fs::symlink(new.file_name().unwrap_or_default(), old)
+}
+
+#[cfg(windows)]
+fn link_back(old: &Path, new: &Path) -> std::io::Result<()> {
+    // a directory junction: unlike a symbolic link it needs no special rights
+    let done = std::process::Command::new("cmd").arg("/C").arg("mklink").arg("/J").arg(old).arg(new).output()?;
+    if done.status.success() { Ok(()) } else { Err(std::io::Error::other(String::from_utf8_lossy(&done.stderr).trim().to_owned())) }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn link_back(_: &Path, _: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// Where the system keeps monitor profiles, for the Choose Monitor Profile dialog to start in: the
@@ -526,6 +549,7 @@ mod tests {
 
     /// BR's settings, logs, video data and templates become shnyp's, once; a shnyp folder that is
     /// there already stays as it is, and so does BR's beside it.
+    #[cfg(unix)]
     #[test]
     fn brs_folders_become_shnyps_once() {
         let home = std::env::temp_dir().join(format!("shnyp-adopt-{}", std::process::id()));
@@ -541,12 +565,17 @@ mod tests {
         assert!(home.join(".config/shnyp/ui.json").is_file());
         assert!(home.join(".local/share/shnyp/Logs/br.log").is_file());
         assert!(home.join(".local/share/shnyp/Vorlagen/a.brvt").is_file());
-        assert!(!home.join(".config/BR").exists() && !home.join(".local/share/BR").exists());
+        // the old names lead to the new folders
+        for old in [".config/BR", ".local/share/BR"] {
+            assert_eq!(std::fs::read_link(home.join(old)).unwrap(), Path::new("shnyp"));
+        }
+        assert!(home.join(".local/share/BR/Logs/br.log").is_file());
         assert!(adopt(own_folders(Platform::Other, env(&vars))).is_empty(), "once");
         // shnyp has its own already: BR's stays beside it
+        std::fs::remove_file(home.join(".config/BR")).unwrap();
         std::fs::create_dir_all(home.join(".config/BR")).unwrap();
         assert!(adopt(own_folders(Platform::Other, env(&vars))).is_empty());
-        assert!(home.join(".config/BR").is_dir());
+        assert!(home.join(".config/BR").is_dir() && !home.join(".config/BR").is_symlink());
         // a profile of its own: only the templates' data folder is BR's
         let own = [("HOME", h.as_str()), ("SHNYP_CONFIG_DIR", "/tmp/profile")];
         assert_eq!(own_folders(Platform::Other, env(&own)), [home.join(".local/share/shnyp")]);

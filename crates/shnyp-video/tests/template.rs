@@ -163,6 +163,23 @@ fn a_video_is_saved_as_a_template_of_one_s_own() {
     let mine = list.as_array().unwrap().iter().find(|t| t["name"] == "Mein Quadrat").cloned().expect("listed");
     assert_eq!(mine["source"], "user");
     assert_eq!(mine["format"], "1:1");
+    // saved while shnyp was called BR (.brvt): listed, and replaced by the same template saved again
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(r["path"].as_str().unwrap()).unwrap()).unwrap();
+    let mut old = saved.clone();
+    old["format"] = json!("9:16");
+    let old_file = Path::new(&folder).join("mein-quadrat.brvt");
+    std::fs::write(&old_file, old.to_string()).unwrap();
+    old["id"] = json!("user-alt");
+    old["name"] = json!("Alt");
+    std::fs::write(Path::new(&folder).join("alt.brvt"), old.to_string()).unwrap();
+    let mine = |folder: &str| -> Vec<String> {
+        let list = shnyp_video::template::list(&json!({"dir": folder}));
+        list.as_array().unwrap().iter().filter(|t| t["source"] == "user").map(|t| format!("{} {}", t["name"], t["format"])).collect()
+    };
+    assert_eq!(mine(&folder), ["\"Alt\" \"9:16\"", "\"Mein Quadrat\" \"1:1\""]);
+    ok(&mut s, "shnyp.video.template.save", json!({"name": "Mein Quadrat", "dir": folder}));
+    assert!(!old_file.exists(), "the old file is replaced");
+    assert_eq!(mine(&folder).len(), 2);
     let mut s2 = Session::default();
     ok(&mut s2, "shnyp.video.template.new", json!({"template": "Mein Quadrat", "dir": folder}));
     assert_eq!(mains(&s2).len(), 3);

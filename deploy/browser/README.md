@@ -39,6 +39,8 @@ Ein zweiter Lauf nach `git pull` aktualisiert shnyp; Einstellungen und Fotos ble
 nächsten Lauf: Es hält die alten Dienste an, benennt den Benutzer um, verschiebt `/srv/br` nach
 `/srv/shnyp` (`/srv/br` zeigt danach dorthin, damit gespeicherte Pfade gültig bleiben), schreibt die
 Werte aus `/etc/br-web.env` in `/etc/shnyp-web.env` und nimmt Ergänzungen aus `systemctl edit` mit.
+Bricht ein Lauf ab, bringt ihn der nächste zu Ende. Ist `/srv/br` eine eigene Platte (Einhängepunkt)
+oder ein Link woandershin, hält das Skript an, bevor es etwas ändert, und sagt, was zu tun ist.
 Der Reverse-Proxy bleibt, wie er ist (dieselben Ports). `/opt/br` und `/etc/br-web.env` werden danach
 nicht mehr gebraucht; Claude Code bekommt shnyp neu (`claude mcp remove br`, dann wie unten).
 

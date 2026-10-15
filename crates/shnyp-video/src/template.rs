@@ -84,8 +84,16 @@ fn user_templates(dir: &std::path::Path) -> Vec<Value> {
             Some(t)
         })
         .collect();
+    // a template saved again since shnyp was called BR: the new file, not the old one
+    let newer: Vec<Value> = v.iter().filter(|t| !is_old(t)).map(|t| t["id"].clone()).collect();
+    v.retain(|t| !is_old(t) || !newer.contains(&t["id"]));
     v.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
     v
+}
+
+/// A template saved while shnyp was called BR (`.brvt`).
+fn is_old(t: &Value) -> bool {
+    t["path"].as_str().is_some_and(|p| p.ends_with(&format!(".{OLD_EXT}")))
 }
 
 fn all(dir: &std::path::Path) -> Vec<Value> {
@@ -461,6 +469,8 @@ pub fn save(s: &mut Session, p: &Value) -> Result<Value, String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let path = dir.join(format!("{id}.{EXT}"));
     std::fs::write(&path, serde_json::to_string_pretty(&t).unwrap_or_default()).map_err(|e| format!("{}: {e}", path.display()))?;
+    // the same template from the time shnyp was called BR: replaced, as a file of its own name is
+    let _ = std::fs::remove_file(dir.join(format!("{id}.{OLD_EXT}")));
     Ok(json!({"template": t["id"], "path": path.to_string_lossy(), "slots": t["slots"].as_array().map_or(0, |a| a.len())}))
 }
 

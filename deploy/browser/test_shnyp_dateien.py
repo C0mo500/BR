@@ -103,6 +103,9 @@ class Server(unittest.TestCase):
         self.assertEqual(self.request("GET", "/api/vnc")[0].status, 403)
         r, body = self.request("GET", "/api/vnc", headers={"X-Shnyp": "1"})
         self.assertEqual((r.status, json.loads(body)), (200, {"passwort": "Ab+/9xYz"}))
+        # a page still open from the time shnyp was called BR
+        self.assertEqual(self.request("GET", "/api/vnc", headers={"X-BR": "1"})[0].status, 200)
+        self.assertEqual(self.request("GET", "/api/vnc", headers={"X-BR": "0"})[0].status, 403)
         self.assertEqual(r.getheader("Cache-Control"), "no-store")
 
     def test_upload_lands_in_the_photo_folder_without_overwriting(self):

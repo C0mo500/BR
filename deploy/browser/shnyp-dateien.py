@@ -200,8 +200,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def own_page(self) -> bool:
         """Kommt die Anfrage von der eigenen Seite? Eine fremde Seite kann diesen Header nicht ohne
-        CORS setzen, und CORS erlaubt shnyp-dateien nicht."""
-        return self.headers.get("X-Shnyp") == "1"
+        CORS setzen, und CORS erlaubt shnyp-dateien nicht. X-BR: eine Seite, die noch offen war, als
+        shnyp BR hieß."""
+        return self.headers.get("X-Shnyp") == "1" or self.headers.get("X-BR") == "1"
 
     def refuse(self, status: int, message: str):
         """Eine Absage auf einen Upload, dessen Inhalt noch unterwegs ist: erst antworten, dann den

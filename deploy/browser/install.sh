@@ -29,6 +29,35 @@ step() { printf '\n== %s\n' "$*"; }
 [ "$(id -u)" -eq 0 ] || { echo "Bitte als root ausführen (sudo $0)." >&2; exit 1; }
 command -v apt-get >/dev/null || { echo "Dieses Skript kennt nur Debian/Ubuntu (apt-get)." >&2; exit 1; }
 
+# shnyp hieß bis Oktober 2026 BR. Was eine Einrichtung von damals hinterlassen hat: die Dienste
+# br-web und br-dateien (mit Ergänzungen aus systemctl edit), den Benutzer br (zu Hause in
+# /srv/br), die Daten in /srv/br und die Einstellungen in /etc/br-web.env.
+br_user() { id br >/dev/null 2>&1 && [ "$(getent passwd br | cut -d: -f6)" = /srv/br ]; }
+br_data() { [ -d /srv/br ] && [ ! -L /srv/br ] && { [ -d /srv/br/Fotos ] || [ -d /srv/br/Bibliothek ] || [ -d /srv/br/Exporte ]; }; }
+br_left() {
+    local unit
+    for unit in /etc/systemd/system/br-web.service /etc/systemd/system/br-dateien.service; do
+        if [ -e "$unit" ] || [ -d "$unit.d" ]; then return 0; fi
+    done
+    br_user || br_data || { [ -e /etc/br-web.env ] && [ ! -e /etc/shnyp-web.env ]; }
+}
+# vorab, bevor irgendetwas geändert wird: was sich nicht von selbst übernehmen lässt
+if br_left; then
+    stop() { echo "$*" >&2; exit 1; }
+    if mountpoint -q /srv/br; then
+        stop "/srv/br ist ein Einhängepunkt. Bitte die Datenplatte stattdessen unter /srv/shnyp einhängen (/etc/fstab) und das Skript noch einmal starten."
+    fi
+    if [ -L /srv/br ] && [ "$(readlink /srv/br)" != /srv/shnyp ]; then
+        stop "/srv/br ist ein Link auf $(readlink /srv/br). Bitte /srv/shnyp dorthin zeigen lassen, /srv/br entfernen und das Skript noch einmal starten."
+    fi
+    if [ -d /srv/br ] && [ ! -L /srv/br ] && [ -e /srv/shnyp ]; then
+        stop "/srv/br und /srv/shnyp gibt es beide. Bitte eines davon wegräumen und das Skript noch einmal starten."
+    fi
+    if id br >/dev/null 2>&1 && ! br_user && ! id shnyp >/dev/null 2>&1; then
+        stop "Den Benutzer br hat nicht die Einrichtung von BR angelegt (zu Hause in $(getent passwd br | cut -d: -f6)). Bitte die Dienste von Hand übernehmen."
+    fi
+fi
+
 step "Pakete"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
@@ -77,49 +106,45 @@ fi
     exit 1
 }
 
-# shnyp hieß bis Oktober 2026 BR: Dienste br-web und br-dateien, Benutzer br, Daten in /srv/br,
-# Einstellungen in /etc/br-web.env. Das wird übernommen, sobald das neue Programm bereitsteht.
-if [ -e /etc/systemd/system/br-web.service ] || [ -e /etc/systemd/system/br-dateien.service ] || id br >/dev/null 2>&1; then
+# Die Einrichtung von BR übernehmen, sobald das neue Programm bereitsteht. Jeder Schritt hängt an dem,
+# was von BR noch da ist: ein abgebrochener Lauf geht beim nächsten zu Ende.
+if br_left; then
     step "Einrichtung von BR übernehmen"
     systemctl disable --now br-web.service br-dateien.service 2>/dev/null || true
     for unit in web dateien; do
-        # eigene Ergänzungen (systemctl edit) gehen mit, auf die neuen Ordner
+        # eigene Ergänzungen (systemctl edit) gehen mit, mit den neuen Namen
         old=/etc/systemd/system/br-$unit.service.d new=/etc/systemd/system/shnyp-$unit.service.d
         if [ -d "$old" ] && [ ! -e "$new" ]; then
             mv "$old" "$new"
-            find "$new" -name '*.conf' -exec sed -i -e 's#/srv/br\([/[:space:]]\|$\)#/srv/shnyp\1#g' {} +
+            find "$new" -name '*.conf' -exec sed -i \
+                -e 's#/opt/br/bin/br-web\([[:space:]"]\|$\)#/opt/shnyp/bin/shnyp-web\1#g' \
+                -e 's#/opt/br/bin/br\([[:space:]"]\|$\)#/opt/shnyp/bin/shnyp\1#g' \
+                -e 's#/\(srv\|opt\)/br\([/[:space:]"]\|$\)#/\1/shnyp\2#g' \
+                -e 's/\bBR_/SHNYP_/g' {} +
         fi
         rm -f "/etc/systemd/system/br-$unit.service"
     done
     systemctl daemon-reload
-    if id br >/dev/null 2>&1 && ! id shnyp >/dev/null 2>&1; then
-        # was als br noch läuft (etwa ein `br mcp --connect`), hält den Benutzer fest
-        pkill -u br 2>/dev/null && sleep 2
-        usermod -l shnyp br
-        if getent group br >/dev/null && ! getent group shnyp >/dev/null; then
-            groupmod -n shnyp br
-        fi
-    fi
-    if [ -d /srv/br ] && [ ! -L /srv/br ] && [ ! -e "$home" ]; then
+    if br_data; then
         mv /srv/br "$home"
         # Pfade, die Bibliothek und Videoprojekte gespeichert haben (/srv/br/Fotos/…), bleiben gültig
         ln -s "$home" /srv/br
         echo "/srv/br ist jetzt $home (/srv/br zeigt dorthin)."
     fi
-    if id shnyp >/dev/null 2>&1 && [ "$(getent passwd shnyp | cut -d: -f6)" != "$home" ]; then
-        usermod -d "$home" shnyp
-    fi
     if [ -e /etc/br-web.env ] && [ ! -e /etc/shnyp-web.env ]; then
         # die neue Vorlage mit den Werten der alten Datei, unter den neuen Namen
-        python3 - "$here/shnyp-web.env" /etc/br-web.env /etc/shnyp-web.env <<'EOF'
+        python3 - "$here/shnyp-web.env" /etc/br-web.env /etc/shnyp-web.env.neu <<'PY'
 import re, sys
 template, old, out = sys.argv[1:]
 name = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)=")
+def renamed(line):
+    line = re.sub(r"^(\s*)BR_", r"\1SHNYP_", line.strip())
+    line = re.sub(r"/opt/br/bin/br(-web)?(?=[\s\"']|$)", lambda m: "/opt/shnyp/bin/shnyp" + (m.group(1) or ""), line)
+    return re.sub(r"/(srv|opt)/br(?=[/\s\"':]|$)", r"/\1/shnyp", line)
 values = {}
 for line in open(old, encoding="utf-8"):
     if name.match(line) and not line.lstrip().startswith("#"):
-        line = re.sub(r"^(\s*)BR_", r"\1SHNYP_", line.strip())
-        line = re.sub(r"/(srv|opt)/br(?=[/\s:]|$)", r"/\1/shnyp", line)
+        line = renamed(line)
         values[name.match(line).group(1)] = line
 lines = []
 for line in open(template, encoding="utf-8"):
@@ -129,9 +154,18 @@ if values:
     lines.append("\n# aus /etc/br-web.env\n")
     lines.extend(v + "\n" for v in values.values())
 open(out, "w", encoding="utf-8").write("".join(lines))
-EOF
-        chmod --reference=/etc/br-web.env /etc/shnyp-web.env
+PY
+        chmod --reference=/etc/br-web.env /etc/shnyp-web.env.neu
+        mv /etc/shnyp-web.env.neu /etc/shnyp-web.env
         echo "Die Einstellungen aus /etc/br-web.env stehen jetzt in /etc/shnyp-web.env."
+    fi
+    if br_user && ! id shnyp >/dev/null 2>&1; then
+        # was als br noch läuft (etwa ein `br mcp --connect`), hält den Benutzer fest
+        if pkill -u br; then sleep 2; fi
+        usermod -l shnyp -d "$home" br
+        if getent group br >/dev/null && ! getent group shnyp >/dev/null; then
+            groupmod -n shnyp br
+        fi
     fi
     migrated=1
 fi
