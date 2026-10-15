@@ -72,12 +72,15 @@ pub struct PaletteState {
     pub nav: crate::keys::Nav,
     /// Where the search was drawn (a click elsewhere closes it).
     rect: Option<egui::Rect>,
+    /// The list, built when the search opens.
+    entries: Option<std::sync::Arc<Vec<Entry>>>,
 }
 
 impl PaletteState {
     pub fn toggle(&mut self) {
         self.open = !self.open;
         self.form = None;
+        self.entries = None;
         self.focus = self.open;
         if self.open {
             self.query.clear();
@@ -253,6 +256,12 @@ fn param_keys(params: &str) -> Vec<(String, String, bool)> {
     out
 }
 
+/// Does a parameter's type name text (`str`, a path, a choice of quoted words)?
+fn is_text(ty: &str) -> bool {
+    let base = ty.split(['?', '=']).next().unwrap_or("").trim();
+    matches!(base, "str" | "string" | "path" | "text" | "name") || (base.len() > 1 && base.starts_with('"') && base.ends_with('"'))
+}
+
 /// A command that cannot run without values (it has no dialog of its own).
 pub(crate) fn needs_values(params: &str) -> bool {
     param_keys(params).iter().any(|p| !p.2)
@@ -261,6 +270,8 @@ pub(crate) fn needs_values(params: &str) -> bool {
 /// Every command, built fresh (about 1 500; the list is built when the search opens).
 pub fn index(app: &BrApp) -> Vec<Entry> {
     let mut v = Vec::new();
+    let shortcuts = &app.fc.session.shortcuts;
+    let key_of = |id: &str| shortcuts.primary(id).map(|k| filmcraft_ui_egui::menus::shortcut_text(&k));
     // BR first: its commands are the CapCut ones
     for c in br_video::COMMANDS {
         let (title, synonyms) = overlay(c.id).unwrap_or((c.summary, ""));
@@ -272,7 +283,7 @@ pub fn index(app: &BrApp) -> Vec<Entry> {
             path: "Video".into(),
             params: c.params.into(),
             needs_params: needs_values(c.params),
-            key: None,
+            key: key_of(c.id),
             synonyms,
         });
     }
@@ -299,11 +310,11 @@ pub fn index(app: &BrApp) -> Vec<Entry> {
             path: "Fenster".into(),
             params: String::new(),
             needs_params: false,
-            key: None,
+            key: key_of(id),
             synonyms,
         });
     }
-    for p in Page::ALL {
+    for (n, p) in Page::ALL.into_iter().enumerate() {
         v.push(Entry {
             id: format!("br.ui.page.{}", p.key()),
             source: Source::BrUi,
@@ -312,12 +323,11 @@ pub fn index(app: &BrApp) -> Vec<Entry> {
             path: "Seiten".into(),
             params: String::new(),
             needs_params: false,
-            key: None,
+            key: Some(filmcraft_ui_egui::menus::shortcut_text(&format!("Cmd+Alt+{}", n + 1))),
             synonyms: "",
         });
     }
     // FilmCraft: its engine, then its window's own commands
-    let shortcuts = &app.fc.session.shortcuts;
     let lang = app.fc.ui.language;
     let de = |s: &str| lang.tr(s).to_string();
     for c in filmcraft_engine::command_specs() {
@@ -604,7 +614,14 @@ pub fn show(app: &mut BrApp, ctx: &egui::Context) {
         return;
     }
     let t = Theme::get(ctx);
-    let entries = index(app);
+    let entries = match app.palette.entries.clone() {
+        Some(e) => e,
+        None => {
+            let e = std::sync::Arc::new(index(app));
+            app.palette.entries = Some(e.clone());
+            e
+        }
+    };
     let video = app.page.is_video();
     let screen = ctx.content_rect();
     let width = 600.0_f32.min(screen.width() - 32.0);
@@ -765,14 +782,17 @@ fn form(app: &mut BrApp, ui: &mut egui::Ui, t: &Theme, e: &Entry, mut values: Ve
     if !go {
         return None;
     }
-    // a value is JSON where it reads as JSON (numbers, lists, true), else text
+    // a value is JSON where it reads as JSON (numbers, lists, true), else text; a text parameter
+    // is always text ("2025" as a title)
     let mut p = serde_json::Map::new();
     for (k, v) in values {
         let v = v.trim();
         if v.is_empty() {
             continue;
         }
-        p.insert(k, serde_json::from_str(v).unwrap_or_else(|_| Value::String(v.to_string())));
+        let ty = kinds.iter().find(|x| x.0 == k).map_or("", |x| x.1.as_str());
+        let value = if is_text(ty) { Value::String(v.to_string()) } else { serde_json::from_str(v).unwrap_or_else(|_| Value::String(v.to_string())) };
+        p.insert(k, value);
     }
     Some(Value::Object(p))
 }

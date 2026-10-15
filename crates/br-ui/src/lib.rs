@@ -150,7 +150,7 @@ pub struct BrApp {
     pub cursor: Option<fn() -> Option<(i32, i32)>>,
     /// Files dropped where the window cannot see the drop itself (the browser page over VNC,
     /// `br.drop`): handed in with the next frame's input, at this place in the window.
-    pub(crate) pending_drop: Option<(Vec<String>, Option<egui::Pos2>)>,
+    pub(crate) pending_drop: std::collections::VecDeque<(Vec<String>, Option<egui::Pos2>)>,
     /// Where such a drop landed, while the frame that has it is handled.
     pub(crate) drop_at: Option<egui::Pos2>,
 }
@@ -232,7 +232,7 @@ impl BrApp {
             monitor: monitor::MonitorState::default(),
             palette: palette::PaletteState::default(),
             cursor: None,
-            pending_drop: None,
+            pending_drop: Default::default(),
             drop_at: None,
             fonts_ok: false,
             widgets: HashMap::new(),
@@ -321,7 +321,11 @@ impl BrApp {
     pub fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         // files dropped on the browser page over BR (br.drop): as if dropped on the window
         self.drop_at = None;
-        if let Some((paths, at)) = self.pending_drop.take() {
+        // one per frame, each at its place
+        if let Some((paths, at)) = self.pending_drop.pop_front() {
+            if !self.pending_drop.is_empty() {
+                ctx.request_repaint();
+            }
             for p in paths {
                 raw.dropped_files.push(std::sync::Arc::new(PathFile(p.into())));
             }
@@ -403,10 +407,12 @@ impl BrApp {
                         self.fc.session.events.retain(|e| !matches!(e, filmcraft_engine::Event::OpenSequence(_)));
                     }
                 }
+                // a drag as it is before FilmCraft draws (it may end it on release)
+                let held = drop::current(self, &ctx);
                 let area = video::ui(&mut self.fc, &mut self.video, ui);
                 cut::set_area(self, area);
                 cut::show(self, &ctx);
-                drop::monitor(self, &ctx);
+                drop::monitor(self, &ctx, held);
                 monitor::after(self, &ctx);
                 palette::show(self, &ctx);
                 cut::draw_toast(self, &ctx);

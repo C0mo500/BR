@@ -500,7 +500,7 @@ fn drop_files(app: &mut BrApp, ctx: &egui::Context, p: &Value) -> Value {
         })
     });
     let n = paths.len();
-    app.pending_drop = Some((paths, at));
+    app.pending_drop.push_back((paths, at));
     ctx.request_repaint();
     ok(json!({"dropped": n, "at": at.map(|a| [a.x, a.y])}))
 }

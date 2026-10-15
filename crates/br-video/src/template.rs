@@ -134,14 +134,17 @@ pub fn list(p: &Value) -> Value {
     )
 }
 
-/// The placeholders of the video, in order: (clip, index in the template).
+/// The placeholders of the video, in order: (clip, index in the template). A slot cut into
+/// pieces (a speed curve, a split, a freeze) is its first piece.
 pub fn placeholders(q: &Sequence) -> Vec<(ClipId, usize)> {
+    let mut seen = std::collections::HashSet::new();
     main_track::main_clips(q)
         .iter()
         .filter_map(|it| {
             let e = it.effect(SLOT)?;
             Some((it.id, e.param("index").and_then(|p| p.value.as_f64()).unwrap_or(0.0) as usize))
         })
+        .filter(|(_, i)| seen.insert(*i))
         .collect()
 }
 
@@ -301,19 +304,31 @@ pub fn fill(s: &mut Session, p: &Value) -> Result<Value, String> {
     if paths.is_empty() && items.is_empty() {
         return Err("give `paths` or `items`".into());
     }
-    let q = s.active_sequence().ok_or("no video yet: br.video.template.new first")?;
-    let targets: Vec<ClipId> = if p.get("all").and_then(Value::as_bool).unwrap_or(false) {
-        placeholders(q).into_iter().map(|x| x.0).collect()
-    } else {
-        empty_placeholders(s)
+    let all = p.get("all").and_then(Value::as_bool).unwrap_or(false);
+    let targets_of = |s: &Session| -> Vec<ClipId> {
+        match s.active_sequence() {
+            Some(q) if all => placeholders(q).into_iter().map(|x| x.0).collect(),
+            Some(_) => empty_placeholders(s),
+            None => Vec::new(),
+        }
     };
-    if targets.is_empty() {
+    s.active_sequence().ok_or("no video yet: br.video.template.new first")?;
+    if targets_of(s).is_empty() {
         return Err("no empty placeholders (all: true fills them again)".into());
     }
     let fit = p.get("fit").and_then(Value::as_str).unwrap_or("fill").to_string();
     let template = template_of(s);
     let (filled, short) = s
         .edit_group("Vorlage füllen", |s| {
+            // a slot baked into curve pieces is one clip again before it gets new media
+            let curved: Vec<u64> = {
+                let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+                targets_of(s).into_iter().filter(|c| crate::speed::curve_of(q, *c).is_some()).map(|c| c.0).collect()
+            };
+            if !curved.is_empty() {
+                crate::speed::curve(s, &json!({"clips": curved, "preset": "none"})).map_err(other)?;
+            }
+            let targets = targets_of(s);
             if !paths.is_empty() {
                 let imported = s.execute("file.import", json!({"paths": crate::expand_folders(&paths)}))?;
                 items.extend(crate::ids(&imported, "items"));

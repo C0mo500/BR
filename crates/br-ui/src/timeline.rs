@@ -68,11 +68,17 @@ struct Layout {
     clips: Vec<(ClipId, Rect)>,
 }
 
+/// Is FilmCraft's timeline shown in BR's place (Profi, and FilmCraft does not show its own
+/// elsewhere)?
+fn profi(app: &BrApp) -> bool {
+    app.timeline.full && !crate::video::fc_shows(&app.fc, filmcraft_ui_egui::dock::PanelKind::Timeline)
+}
+
 /// Where a drop at `p` lands on the timeline (as last drawn): onto a clip for an effect
 /// (`onto_clip`), else the main track, above it or among the sound tracks.
 pub(crate) fn spot_at(app: &BrApp, p: Pos2, onto_clip: bool) -> Option<crate::drop::Spot> {
     use crate::drop::Spot;
-    if !visible(app) || app.timeline.full {
+    if !visible(app) || profi(app) {
         return None;
     }
     let l = app.timeline.layout.as_ref()?;
@@ -165,8 +171,7 @@ pub fn show(app: &mut BrApp, ui: &mut Ui) {
         .show(ui, |ui| {
             bar(app, ui, &t);
             let rect = ui.available_rect_before_wrap();
-            let fc_has_it = app.fc.ui.dock.contains(filmcraft_ui_egui::dock::PanelKind::Timeline);
-            if app.timeline.full && !fc_has_it {
+            if profi(app) {
                 // FilmCraft's own panel (its egui ids are its own: never drawn twice in one frame)
                 if ui.rect_contains_pointer(rect) && ui.input(|i| i.pointer.any_pressed()) {
                     app.fc.ui.focused = filmcraft_ui_egui::dock::PanelKind::Timeline;
@@ -188,7 +193,8 @@ fn bar(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
         ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(8.0, 2.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
     row.spacing_mut().item_spacing.x = 2.0;
     let settings = app.fc.session.active_sequence().map(main_track::settings).unwrap_or_default();
-    let full = app.timeline.full;
+    // the tools work on BR's timeline (shown unless FilmCraft's is in its place)
+    let full = profi(app);
 
     let r = crate::cut::tool(
         &mut row,
@@ -240,12 +246,12 @@ fn bar(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
         Icon::Wrench,
         "Profi",
         "FilmCrafts vollständige Timeline (Premieres Werkzeuge: Rollen, Slip, Slide, Spuren, Keyframes …)",
-        full,
+        app.timeline.full,
         true,
     );
     app.widgets.insert("tl.view.full".into(), r.rect);
     if r.clicked() {
-        app.timeline.full = !full;
+        app.timeline.full = !app.timeline.full;
     }
     // the music's beats as markers to snap to (again: away)
     let has_beats = app.fc.session.active_sequence().is_some_and(|q| !br_video::beats::markers(q).is_empty());
@@ -523,7 +529,7 @@ fn canvas(app: &mut BrApp, ui: &mut Ui, t: &Theme, rect: Rect) {
     // where it would land, and on release the drop
     let os_files = ctx.input(|i| !i.raw.hovered_files.is_empty());
     let over = if os_files { crate::drop::os_pointer(app, &ctx) } else { ui.input(|i| i.pointer.interact_pos()) };
-    if let Some(p) = over.filter(|p| lane.contains(*p)) {
+    if let Some(p) = over.filter(|p| lane.contains(*p) && !covered(&ctx, *p)) {
         let payload = if os_files { Some(crate::drop::Payload::Files(Vec::new())) } else { crate::drop::current(app, &ctx) };
         if let Some(payload) = payload
             && let Some(spot) = spot_at(app, p, payload.onto_clip())
@@ -863,6 +869,12 @@ fn peaks(app: &mut BrApp, item: ItemId, stream: usize) -> Option<Arc<Vec<(f32, f
 
 /// Presses, drags and releases on the timeline.
 #[allow(clippy::too_many_arguments)]
+/// Is `p` under something drawn over the timeline (a popover, a menu, a popup, a floating
+/// window, as of the last frame)? Then a press or a drop there is not the timeline's.
+fn covered(ctx: &egui::Context, p: Pos2) -> bool {
+    ctx.layer_id_at(p).is_some_and(|l| !matches!(l.order, egui::Order::Background | egui::Order::Tooltip))
+}
+
 fn interact(
     app: &mut BrApp,
     ui: &mut Ui,
@@ -890,7 +902,7 @@ fn interact(
         app.timeline.drag = Some(Drag::Playhead);
     }
     // a press: on the ruler the playhead, on a clip that clip, elsewhere nothing selected
-    if pressed && let Some(p) = pointer.filter(|p| rect.contains(*p)) {
+    if pressed && let Some(p) = pointer.filter(|p| rect.contains(*p) && !covered(ctx, *p)) {
         app.fc.ui.focused = filmcraft_ui_egui::dock::PanelKind::Timeline;
         if ruler.rect.contains(p) {
             app.fc.stop();
@@ -931,7 +943,7 @@ fn interact(
     }
     // double click on a clip: its picture at the playhead
     if double
-        && let Some(p) = pointer
+        && let Some(p) = pointer.filter(|p| !covered(ctx, *p))
         && let Some((clip, _, _)) = hits.iter().rev().find(|h| h.1.contains(p))
     {
         let _ = clip;
@@ -960,7 +972,7 @@ fn interact(
         }
     }
     // hover cursors: edges trim, clips move
-    if let Some(p) = pointer.filter(|p| lane_rect.contains(*p))
+    if let Some(p) = pointer.filter(|p| lane_rect.contains(*p) && !covered(ctx, *p))
         && let Some((_, r, kind)) = hits.iter().rev().find(|h| h.1.contains(p))
         && *kind != RowKind::Captions
     {
@@ -1004,8 +1016,13 @@ fn finish(app: &mut BrApp, ctx: &egui::Context, drag: Drag, p: Pos2, view: &View
             }
             let pts = snap_points(&q, playhead, clip);
             let (start, _) = snap(&pts, view.t(p.x) - grab, view.pps);
+            // onto the main track: pictures only (sound and titles stay on their kind of track)
+            let picture = q.find_item(clip).is_some_and(|(t, it)| {
+                q.track(t).is_some_and(|t| t.kind == TrackKind::Video) && !main_track::is_background(it) && it.graphic_layers().next().is_none()
+            });
             let target = match row {
-                Some(r) if r.kind == RowKind::Main => json!("main"),
+                Some(r) if r.kind == RowKind::Main && picture => json!("main"),
+                Some(r) if r.kind == RowKind::Main => json!(q.find_item(clip).map(|(t, _)| t.0)),
                 Some(r) if matches!(r.kind, RowKind::Overlay | RowKind::Sound) => json!(r.track.0),
                 // above the top row: a new overlay track; elsewhere where it was
                 _ if rows.first().is_some_and(|r| p.y < r.rect.min.y) => json!("overlay"),

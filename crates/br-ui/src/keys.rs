@@ -51,33 +51,65 @@ pub fn register(fc: &mut FilmcraftApp) {
 }
 
 /// The CapCut key set: Final Cut's with [`CAPCUT_KEYS`]; FilmCraft's ⌘K (Schnitt setzen, the
-/// command search's key here) is gone.
+/// command search's key here) is gone. The Timeline and Program panels' own bindings of those
+/// keys (Entf = Löschen ohne Aufschließen, ⌘R = Lineale) give way to CapCut's; Entf in the
+/// Project panel deletes project items, as ⌫ does there.
 pub fn capcut(sc: &Shortcuts) -> Vec<Binding> {
     let mut b = sc.builtin(FCP_PRESET).unwrap_or_default();
     let p = Platform::current();
+    let chord = |k: &str| filmcraft_engine::shortcuts::Chord::parse(k).ok().map(|c| c.effective(p));
     for (command, keys) in CAPCUT_KEYS {
-        let Ok(chord) = filmcraft_engine::shortcuts::Chord::parse(keys) else { continue };
-        let eff = chord.effective(p);
-        b.retain(|x| !(x.panel.is_none() && filmcraft_engine::shortcuts::Chord::parse(&x.keys).is_ok_and(|c| c.effective(p) == eff)));
-        b.push(Binding { command: (*command).into(), keys: chord.canonical(), panel: None });
+        let Ok(c) = filmcraft_engine::shortcuts::Chord::parse(keys) else { continue };
+        let eff = c.effective(p);
+        b.retain(|x| {
+            let taken = matches!(x.panel.as_deref(), None | Some("Timeline") | Some("Program"));
+            !(taken && chord(&x.keys) == Some(eff.clone()))
+        });
+        b.push(Binding { command: (*command).into(), keys: c.canonical(), panel: None });
+    }
+    if let Ok(del) = filmcraft_engine::shortcuts::Chord::parse("Delete") {
+        let eff = del.effective(p);
+        b.retain(|x| !(x.panel.as_deref() == Some("Project") && chord(&x.keys) == Some(eff.clone())));
+        b.push(Binding { command: "project.delete".into(), keys: del.canonical(), panel: Some("Project".into()) });
     }
     b
 }
 
-/// Start FilmCraft's key set as CapCut, once: when it is still FilmCraft's unchanged default and
-/// BR has not done so before (the CapCut preset is saved among the user's, where there is a data
-/// folder; whoever picks another set keeps it).
+/// The file that says BR has started FilmCraft's keys as CapCut once (in FilmCraft's data
+/// folder, next to its settings).
+fn installed_marker(fc: &FilmcraftApp) -> Option<std::path::PathBuf> {
+    fc.session.prefs_path.as_ref().and_then(|p| p.parent()).map(|d| d.join("br-tasten-capcut"))
+}
+
+/// Start FilmCraft's key set as CapCut, once: when it is still FilmCraft's unchanged default the
+/// first time BR runs (whoever then picks another set keeps it, even after deleting the CapCut
+/// preset). An unchanged CapCut set is brought up to date on every start.
 pub fn install(fc: &mut FilmcraftApp) {
+    let marker = installed_marker(fc);
     let sc = &mut fc.session.shortcuts;
-    if sc.preset != DEFAULT_PRESET || sc.modified || sc.user_presets().iter().any(|n| n == CAPCUT) {
+    let save = |sc: &mut Shortcuts| {
+        if sc.save_preset(CAPCUT).is_err() {
+            // no data folder (tests, a session in memory): only for now
+            sc.preset = CAPCUT.into();
+            sc.modified = false;
+            sc.revision += 1;
+        }
+    };
+    if sc.preset == CAPCUT && !sc.modified {
+        let now = capcut(sc);
+        if now != sc.bindings {
+            sc.bindings = now;
+            save(sc);
+        }
         return;
     }
-    sc.bindings = capcut(sc);
-    if sc.save_preset(CAPCUT).is_err() {
-        // no data folder (tests, a session in memory): only for now
-        sc.preset = CAPCUT.into();
-        sc.modified = false;
-        sc.revision += 1;
+    let done = marker.as_ref().is_some_and(|m| m.exists());
+    if !done && sc.preset == DEFAULT_PRESET && !sc.modified {
+        sc.bindings = capcut(sc);
+        save(sc);
+    }
+    if let Some(m) = marker.filter(|_| !done) {
+        let _ = std::fs::write(m, "BR hat die Tastenbelegung einmal auf CapCut gesetzt.\n");
     }
 }
 
@@ -123,6 +155,8 @@ pub fn handle(app: &mut BrApp, ctx: &egui::Context) {
     // FilmCraft's bindings of BR's commands, as (modifiers, key, command)
     let video = app.page.is_video() && app.fc.dialog.is_none();
     let typing = ctx.text_edit_focused() || ctx.egui_wants_keyboard_input();
+    // FilmCraft's shortcut editor takes every key while it is open (it records them)
+    let editor = app.fc.dialog == Some(filmcraft_ui_egui::Dialog::Shortcuts) || app.fc.shortcut_editor.recording.is_some();
     let bound: Vec<(Modifiers, Key, String)> = if video && !open {
         let focused = app.fc.ui.focused.title();
         let sc = &app.fc.session.shortcuts;
@@ -143,6 +177,9 @@ pub fn handle(app: &mut BrApp, ctx: &egui::Context) {
         i.events.retain(|e| {
             let Event::Key { key, pressed: true, modifiers, .. } = e else { return true };
             let (key, m) = (*key, *modifiers);
+            if editor {
+                return true;
+            }
             // Strg+K: the command search (also to close it)
             if key == Key::K && m.command && !m.shift && !m.alt {
                 actions.push("br.ui.palette".into());
@@ -168,11 +205,9 @@ pub fn handle(app: &mut BrApp, ctx: &egui::Context) {
                 }
                 return false;
             }
-            // a field being typed in keeps its keys (and an input method its letters)
-            if typing && (m.is_none() || matches!(key, Key::Backspace | Key::Delete)) {
-                return true;
-            }
-            if typing && !m.command {
+            // a field being typed in keeps its keys, chords too (⌘B in a title's text is not
+            // Teilen), as FilmCraft keeps its own shortcuts away from a focused field
+            if typing {
                 return true;
             }
             if let Some((_, _, id)) = bound.iter().find(|(bm, bk, _)| *bk == key && same_mods(m, *bm)) {

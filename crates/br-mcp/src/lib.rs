@@ -469,7 +469,7 @@ pub fn video_tools() -> Vec<Value> {
             "br_video_effect",
             "Effects",
             "Add an effect to a clip (`effect`: an id or name from br_video_schema; an audio effect on a picture goes on its sound) and get its index, or remove, disable, enable or reset one (`effect`: its index or id; `param` resets one parameter; `on`: the clip it is on when that is the linked sound).",
-            json!({"op": {"type": "string", "enum": ["add", "remove", "enable", "disable", "reset"]}, "effect": {"oneOf": [{"type": "integer"}, {"type": "string"}]}, "param": {"type": "string"}, "clip": {"type": "integer"}, "on": {"type": "integer"}}),
+            json!({"op": {"type": "string", "enum": ["add", "remove", "enable", "disable", "reset"]}, "effect": {"oneOf": [{"type": "integer"}, {"type": "string"}]}, "param": {"type": "string"}, "clip": {"type": "integer"}, "clips": {"type": "array", "items": {"type": "integer"}, "description": "add: onto each of these clips it fits (one undo step)"}, "on": {"type": "integer"}}),
             &["effect"],
             false,
         ),

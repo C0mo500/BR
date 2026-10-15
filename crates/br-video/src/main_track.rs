@@ -171,11 +171,15 @@ pub fn note_unlocked(q: &mut Sequence, tracks: &[TrackId]) {
 /// on the main track, sound or backgrounds only, at most one per track. (FilmCraft's Link can
 /// also tie two pictures together; those stay clips of their own.)
 pub fn partners(q: &Sequence, clip: ClipId) -> Vec<ClipId> {
-    let Some(link) = q.find_item(clip).and_then(|(_, it)| it.link) else { return Vec::new() };
+    let Some((track, link)) = q.find_item(clip).and_then(|(t, it)| Some((t, it.link?))) else { return Vec::new() };
     let main = main_track_id(q);
+    // a background belongs to its main clip only (not to that clip's sound)
+    let on_main = Some(track) == main;
     let mut out = Vec::new();
     for t in q.all_tracks().filter(|t| Some(t.id) != main) {
-        if let Some(it) = t.items.iter().find(|it| it.link == Some(link) && it.id != clip && (t.kind == TrackKind::Audio || is_background(it))) {
+        if let Some(it) =
+            t.items.iter().find(|it| it.link == Some(link) && it.id != clip && (t.kind == TrackKind::Audio || (on_main && is_background(it))))
+        {
             out.push(it.id);
         }
     }

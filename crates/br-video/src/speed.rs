@@ -94,7 +94,7 @@ fn with_partners(q: &Sequence, c: ClipId) -> Vec<ClipId> {
 }
 
 /// The pieces of the curve clip `c` belongs to, in time order (just `c` without a curve).
-fn curve_pieces(q: &Sequence, c: ClipId) -> Vec<ClipId> {
+pub(crate) fn curve_pieces(q: &Sequence, c: ClipId) -> Vec<ClipId> {
     let Some((tid, it)) = q.find_item(c) else { return Vec::new() };
     let (Some(g), true) = (it.group, it.effect(CURVE).is_some()) else { return vec![c] };
     let mut v: Vec<(Tick, ClipId)> = q
@@ -184,11 +184,27 @@ fn bake(q: &mut Sequence, ctx: &mut filmcraft_edit::EditCtx, c: ClipId, curve: &
     let (start, dur, base) = q.find_item(c).map(|(_, it)| (it.start, it.duration, it.speed.abs())).ok_or_else(|| other("no such clip"))?;
     let run_frames = dur.0 as f64 * base / fd.0 as f64;
     let plan = pieces(curve.points, run_frames, base);
-    // cut where the pieces meet (in the clip as it plays now), the last cut first
-    let cuts: Vec<Tick> =
-        plan[..plan.len() - 1].iter().map(|(x, _)| q.settings.frame_rate.snap(start + Tick((dur.0 as f64 * x).round() as i64))).collect();
-    let mut cuts: Vec<Tick> = cuts.into_iter().filter(|t| *t > start && *t < start + dur).collect();
-    cuts.dedup();
+    // cut where the pieces meet (in the clip as it plays now), on frames; two cuts in one frame
+    // are one, and each piece then plays the frames of every planned piece it covers
+    let mut marks: Vec<(Tick, usize)> = Vec::new();
+    for (i, (x, _)) in plan[..plan.len() - 1].iter().enumerate() {
+        let t = q.settings.frame_rate.snap(start + Tick((dur.0 as f64 * x).round() as i64));
+        if !(t > start && t < start + dur) {
+            continue;
+        }
+        match marks.last_mut() {
+            Some(last) if last.0 == t => last.1 = i,
+            _ => marks.push((t, i)),
+        }
+    }
+    let mut frames_of: Vec<i64> = Vec::new();
+    let mut from = 0;
+    for (_, i) in &marks {
+        frames_of.push(plan[from..=*i].iter().map(|x| x.1).sum());
+        from = i + 1;
+    }
+    frames_of.push(plan[from.min(plan.len())..].iter().map(|x| x.1).sum());
+    let cuts: Vec<Tick> = marks.iter().map(|m| m.0).collect();
     let group = with_partners(q, c);
     let mut right: Vec<ClipId> = Vec::new();
     for t in cuts.iter().rev() {
@@ -204,7 +220,7 @@ fn bake(q: &mut Sequence, ctx: &mut filmcraft_edit::EditCtx, c: ClipId, curve: &
     all.extend(right);
     let gid = ctx.alloc();
     for (i, p) in all.iter().enumerate() {
-        let frames = plan.get(i).map_or(1, |x| x.1).max(1);
+        let frames = frames_of.get(i).copied().unwrap_or(1).max(1);
         let len = Tick(frames * fd.0);
         for id in with_partners(q, *p) {
             let Some((_, it)) = q.find_item_mut(id) else { continue };

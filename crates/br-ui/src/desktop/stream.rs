@@ -49,9 +49,18 @@ impl StreamOut {
                 std::thread::Builder::new()
                     .name("br-ton".into())
                     .spawn(move || {
-                        for c in l.incoming().flatten() {
-                            if c.set_nonblocking(true).is_ok() {
-                                list.lock().unwrap_or_else(PoisonError::into_inner).push(c);
+                        for c in l.incoming() {
+                            match c {
+                                Ok(c) => {
+                                    if c.set_nonblocking(true).is_ok() {
+                                        list.lock().unwrap_or_else(PoisonError::into_inner).push(c);
+                                    }
+                                }
+                                // out of file handles and the like: wait instead of spinning
+                                Err(e) => {
+                                    log::warn!("Ton für den Browser: {e}");
+                                    std::thread::sleep(Duration::from_millis(200));
+                                }
                             }
                         }
                     })

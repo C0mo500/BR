@@ -631,17 +631,19 @@ function screenAt(e) {
 let ton = null;
 async function toggleTon() {
   if (ton) { ton.stop(); return; }
-  let ctx;
+  // claimed before the first wait: a second click stops this one instead of starting another
+  let on = true, ctx = null;
+  const abort = new AbortController();
+  const me = { stop() { on = false; abort.abort(); ctx?.close().catch(() => {}); if (ton === me) { ton = null; $("ton").textContent = "🔇 Ton"; } } };
+  ton = me;
+  $("ton").textContent = "🔊 Ton";
   try {
     ctx = new AudioContext({ sampleRate: 48000, latencyHint: "interactive" });
     await ctx.audioWorklet.addModule(here + "ton.js");
-  } catch (e) { ctx?.close(); say("Ton geht in diesem Browser nicht: " + e.message, true); return; }
+  } catch (e) { if (on) { me.stop(); say("Ton geht in diesem Browser nicht: " + e.message, true); } return; }
+  if (!on) return;
   const node = new AudioWorkletNode(ctx, "br-ton", { outputChannelCount: [2] });
   node.connect(ctx.destination);
-  const abort = new AbortController();
-  let on = true;
-  ton = { stop() { on = false; abort.abort(); ctx.close(); ton = null; $("ton").textContent = "🔇 Ton"; } };
-  $("ton").textContent = "🔊 Ton";
   while (on) {
     try {
       const r = await fetch(here + "api/ton", { headers: { "X-BR": "1" }, cache: "no-store", signal: abort.signal });

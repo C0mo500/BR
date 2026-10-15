@@ -141,6 +141,10 @@ fn settle(q: &mut Sequence, fixed: &HashSet<ClipId>, ctx: &mut EditCtx) -> R<()>
                 b
             };
             let Some(tr) = q.track_mut(tid) else { break };
+            // a locked track keeps its clips: the overlap cannot be cleared
+            if tr.locked {
+                return Err(other("die Spur ist gesperrt"));
+            }
             let Some(i) = tr.items.iter().position(|it| it.id == go) else { break };
             let it = tr.items.remove(i);
             filmcraft_edit::remove_orphan_transitions(tr);
@@ -164,7 +168,10 @@ pub(crate) fn relayout(before: &Sequence, q: &mut Sequence, starts: &[(ClipId, T
         if d == Tick::ZERO {
             continue;
         }
-        for id in with_partners(q, *c) {
+        // nothing on a locked track moves
+        let group = with_partners(q, *c);
+        unlocked(q, &group)?;
+        for id in group {
             if let Some((_, it)) = q.find_item_mut(id) {
                 it.start = (it.start + d).max(Tick::ZERO);
             }
@@ -250,6 +257,8 @@ pub fn delete(s: &mut Session, chosen: &[ClipId]) -> R<Value> {
             if gone.is_empty() {
                 return Err(other("nichts zu löschen"));
             }
+            // a clip on a locked track (or its sound there) stays: nothing is deleted half
+            unlocked(q, &gone)?;
             filmcraft_edit::delete_items(q, &gone);
             // the gap of each deleted main clip closes: what came after moves up by the length of
             // the deleted clips before it
@@ -330,7 +339,13 @@ pub fn move_clip(s: &mut Session, clip: ClipId, to: To) -> R<Value> {
             let it = it.clone();
             let index_of = |q: &Sequence, to: &To| match to {
                 To::Index(i) => Some(*i),
-                To::Main(t) => Some(index_at(q, *t)),
+                // a main clip dropped behind itself counts one place less (it leaves its own
+                // place first)
+                To::Main(t) => {
+                    let i = index_at(q, *t);
+                    let own = main_track::main_clips(q).iter().position(|m| m.id == clip);
+                    Some(if own.is_some_and(|f| i > f) { i - 1 } else { i })
+                }
                 To::Track(..) => None,
             };
             let followed = match (from_main, index_of(q, &to)) {
@@ -379,6 +394,11 @@ pub fn move_clip(s: &mut Session, clip: ClipId, to: To) -> R<Value> {
                 }
                 // onto the main track at a cut; what follows moves on by its length
                 (false, Some(i)) => {
+                    // pictures only: sound keeps to the sound tracks, titles stay above
+                    let src_kind = q.find_item(clip).and_then(|(t, _)| q.track(t)).map(|t| t.kind);
+                    if src_kind != Some(TrackKind::Video) || is_background(&it) || it.graphic_layers().next().is_some() {
+                        return Err(other("auf die Hauptspur kommen nur Videos und Bilder"));
+                    }
                     let i = i.min(main_track::main_clips(q).len());
                     let cut = main_track::main_clips(q)
                         .get(i)
@@ -531,6 +551,30 @@ pub fn speed(s: &mut Session, clips: &[ClipId], speed: f64) -> R<Value> {
     if !(speed.is_finite() && speed > 0.0) {
         return Err(other("das Tempo muss größer als 0 sein"));
     }
+    // a constant speed replaces a speed curve: its pieces become one clip again first
+    let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let mut ids: Vec<ClipId> = Vec::new();
+    let mut curved: Vec<u64> = Vec::new();
+    for c in clips {
+        let first = crate::speed::curve_pieces(q, *c).first().copied().unwrap_or(*c);
+        if crate::speed::curve_of(q, first).is_some() && !curved.contains(&first.0) {
+            curved.push(first.0);
+        }
+        if !ids.contains(&first) {
+            ids.push(first);
+        }
+    }
+    if curved.is_empty() {
+        return constant_speed(s, clips, speed);
+    }
+    s.edit_group(&format!("Tempo {speed}×"), |s| {
+        crate::speed::curve(s, &json!({"clips": curved, "preset": "none"})).map_err(other)?;
+        constant_speed(s, &ids, speed)
+    })
+}
+
+/// [`speed`] of clips without a curve.
+fn constant_speed(s: &mut Session, clips: &[ClipId], speed: f64) -> R<Value> {
     let label = format!("Tempo {speed}×");
     let sw = switches(s);
     if !sw.linkage {
@@ -645,6 +689,9 @@ pub fn insert_range(s: &mut Session, items: &[u64], at: Option<Tick>, range: Opt
         let q = s.active_sequence().ok_or(EngineError::NoSequence)?;
         (main_track::main_track_id(q).ok_or(EngineError::NoSequence)?, main_track::main_audio_track(q))
     };
+    // what hangs on what is read from the video as it was before anything was placed (placed at
+    // the end first, a new clip would take over a title that ends the video)
+    let orig = s.active_sequence().cloned().ok_or(EngineError::NoSequence)?;
     // first at the end of the main track (and its sound track), where they cut nothing
     let mut mains: Vec<ClipId> = Vec::new();
     for item in items {
@@ -671,19 +718,28 @@ pub fn insert_range(s: &mut Session, items: &[u64], at: Option<Tick>, range: Opt
         }
         new_clips.extend(clips);
     }
-    // a sound placed on a new track: that track follows the anchors, not the sync lock
-    s.edit_sequence("Einfügen", |q, _, _| {
-        main_track::ensure(q);
-        let main_audio = main_track::main_audio_track(q);
-        for t in q.audio_tracks.iter_mut().filter(|t| Some(t.id) != main_audio && t.items.iter().all(|it| new_clips.contains(&it.id.0))) {
-            t.sync_lock = false;
-        }
-        Ok(())
-    })?;
-    // then into their place in the order
+    // a sound placed on a new track: with linkage on that track follows the anchors, not the
+    // sync lock (a track that was there keeps its own)
+    if sw.linkage {
+        s.edit_sequence("Einfügen", |q, _, _| {
+            main_track::ensure(q);
+            let main_audio = main_track::main_audio_track(q);
+            let mut unlocked = Vec::new();
+            for t in q.audio_tracks.iter_mut().filter(|t| Some(t.id) != main_audio && orig.track(t.id).is_none() && !t.items.is_empty()) {
+                t.sync_lock = false;
+                unlocked.push(t.id);
+            }
+            main_track::note_unlocked(q, &unlocked);
+            Ok(())
+        })?;
+    }
+    // then into their place in the order (at the end: what ended the video moves to its new end)
+    if at.is_none() && !mains.is_empty() && sw.linkage {
+        s.edit_sequence("Einfügen", |q, ctx, _| anchors::follow(&orig, q, ctx, Orphans::Keep).map(|_| ()))?;
+    }
     if let (Some(at), false) = (at, mains.is_empty()) {
         s.edit_sequence("Einfügen", |q, ctx, _| {
-            let before = q.clone();
+            let before = orig.clone();
             let old: Vec<ClipId> = main_track::main_clips(q).iter().map(|m| m.id).filter(|c| !mains.contains(c)).collect();
             let without: Vec<(Tick, Tick)> =
                 main_track::main_clips(q).iter().filter(|m| !mains.contains(&m.id)).map(|m| (m.start, m.end())).collect();
@@ -795,15 +851,34 @@ pub fn duplicate(s: &mut Session, clips: &[ClipId]) -> R<Value> {
             for c in clips {
                 let before = q.clone();
                 let Some((_, it)) = q.find_item(*c) else { continue };
-                let (start, len, main) = (it.start, it.duration, is_main(q, *c));
+                let (len, end, main) = (it.duration, it.end(), is_main(q, *c));
                 let group = with_partners(q, *c);
                 unlocked(q, &group)?;
-                if main && main_track::settings(q).magnet {
-                    // make room right after it
-                    let starts = later_starts(&before, *c, len);
-                    relayout(&before, q, &starts, ctx, Orphans::Keep)?;
+                // the transition into what follows goes with the copy (it would no longer sit
+                // between neighbours)
+                let mut carried: Vec<(TrackId, ClipId, filmcraft_project::Transition)> = Vec::new();
+                for id in &group {
+                    let Some((tid, _)) = q.find_item(*id) else { continue };
+                    if let Some(tr) = q.track(tid) {
+                        carried.extend(tr.transitions.iter().filter(|x| x.from == Some(*id) && x.to.is_some()).map(|x| (tid, *id, x.clone())));
+                    }
+                }
+                if main {
+                    // make room right after it: by its length with the magnet on, else only as
+                    // much as the gap to the next main clip lacks
+                    let room = if main_track::settings(q).magnet {
+                        len
+                    } else {
+                        let next = main_track::main_clips(q).iter().filter(|m| m.id != *c && m.start >= end).map(|m| m.start).min();
+                        next.map_or(Tick::ZERO, |n| (len - (n - end)).max(Tick::ZERO))
+                    };
+                    if room > Tick::ZERO {
+                        let starts = later_starts(&before, *c, room);
+                        relayout(&before, q, &starts, ctx, Orphans::Keep)?;
+                    }
                 }
                 let link = (group.len() > 1).then(|| ctx.alloc());
+                let mut made: Vec<(ClipId, ClipId)> = Vec::new();
                 for id in &group {
                     let Some((tid, it)) = q.find_item(*id) else { continue };
                     let mut copy = it.clone();
@@ -819,12 +894,21 @@ pub fn duplicate(s: &mut Session, clips: &[ClipId]) -> R<Value> {
                     if *id == *c {
                         copies.push(copy.id.0);
                     }
+                    made.push((*id, copy.id));
                     if let Some(t) = q.track_mut(dest) {
                         t.items.push(copy);
                         t.sort();
                     }
                 }
-                let _ = start;
+                for (tid, from, x) in carried {
+                    let Some(copy) = made.iter().find(|m| m.0 == from).map(|m| m.1) else { continue };
+                    let Some(tr) = q.track_mut(tid) else { continue };
+                    let (Some(cp), Some(next)) = (tr.item(copy).map(|i| i.end()), x.to.and_then(|t| tr.item(t)).map(|i| i.start)) else { continue };
+                    if cp == next && !tr.transitions.iter().any(|t| t.id == x.id) {
+                        tr.transitions.push(filmcraft_project::Transition { from: Some(copy), start: x.start + len, ..x });
+                        tr.sort();
+                    }
+                }
                 let fixed: HashSet<ClipId> = main_track::main_clips(q).iter().flat_map(|m| with_partners(q, m.id)).collect();
                 settle(q, &fixed, ctx)?;
             }

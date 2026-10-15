@@ -395,7 +395,8 @@ fn effects(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
             if r.clicked()
                 && let Some(sel) = selection_or_say(app, &ctx)
             {
-                run(app, &ctx, "br.video.effect", json!({"clip": sel[0], "op": "add", "effect": id}));
+                // onto every selected clip it fits
+                run(app, &ctx, "br.video.effect", json!({"clips": sel, "op": "add", "effect": id}));
             }
             if r.drag_started() {
                 panels::start_drag_effect(ui, id);
@@ -533,8 +534,8 @@ fn profi(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
     });
     ui.add_space(4.0);
     let panel = app.assets.panel;
-    if app.fc.ui.dock.contains(panel) {
-        ui.label(RichText::new("Dieses Panel ist im Fenster angedockt und wird dort gezeigt.").size(12.0).color(t.dim));
+    if crate::video::fc_shows(&app.fc, panel) {
+        ui.label(RichText::new("Dieses Panel ist im Fenster angedockt oder schwebt und wird dort gezeigt.").size(12.0).color(t.dim));
         return;
     }
     let rect = ui.available_rect_before_wrap();

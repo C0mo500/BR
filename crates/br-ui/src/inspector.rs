@@ -149,6 +149,10 @@ pub fn show(app: &mut BrApp, ui: &mut Ui) {
         return;
     }
     let t = Theme::get(ui.ctx());
+    // every press starts a new gesture (a field keeping its focus must not tie two drags together)
+    if ui.input(|i| i.pointer.any_pressed()) {
+        app.inspector.gesture = None;
+    }
     egui::Panel::right("br_inspector")
         .resizable(true)
         .default_size(WIDTH)
@@ -461,9 +465,9 @@ fn voll(app: &mut BrApp, ui: &mut Ui, t: &Theme, v: &Value) {
         }
     });
     ui.add_space(4.0);
-    if app.fc.ui.dock.contains(current) {
+    if crate::video::fc_shows(&app.fc, current) {
         // FilmCraft's panels draw with their own ids: never twice in one frame
-        ui.label(RichText::new("Dieses Panel ist im Fenster angedockt und wird dort gezeigt.").size(12.0).color(t.dim));
+        ui.label(RichText::new("Dieses Panel ist im Fenster angedockt oder schwebt und wird dort gezeigt.").size(12.0).color(t.dim));
         return;
     }
     let rect = ui.available_rect_before_wrap();
@@ -561,7 +565,9 @@ fn widget(ui: &mut Ui, t: &Theme, row: &Value, id: &str) -> (Option<Value>, egui
             let r1 = ui.add_sized([w, ROW_H], drag_value(&mut x, "X ", wheel));
             let r2 = ui.add_sized([w, ROW_H], drag_value(&mut y, "Y ", wheel));
             let changed = r1.changed() || r2.changed();
-            (changed.then(|| json!([x, y])), r1.union(r2))
+            // the response carries the focused field's id (typing into Y is one step too)
+            let r = if r2.has_focus() { r2.union(r1) } else { r1.union(r2) };
+            (changed.then(|| json!([x, y])), r)
         }
         "bool" => {
             let mut b = v.as_bool().unwrap_or(false);

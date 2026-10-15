@@ -1146,8 +1146,9 @@ fn apply(s: &mut Session, tg: &Target, value: Value, input: Option<Value>, keyfr
             let c = tg.clip.ok_or_else(|| other("no clip"))?;
             let on = want_bool(&value, "Rückwärts")?;
             let (_, it) = q.find_item(c).ok_or_else(|| other("no such clip"))?;
+            // as Tempo › Rückwärts does it: with its sound, a speed curve as a whole
             if it.reverse != on {
-                s.execute("clip.speedDuration", json!({"clips": [c.0], "speed": it.speed.abs() * 100.0, "reverse": on, "ripple": false}))?;
+                crate::speed::reverse(s, &json!({"clips": [c.0]})).map_err(other)?;
             }
             Ok(None)
         }
@@ -1444,6 +1445,9 @@ pub fn keyframe(s: &mut Session, p: &Value) -> Result<Value, String> {
 /// `br.video.effect`.
 pub fn effect(s: &mut Session, p: &Value) -> Result<Value, String> {
     let op = p.get("op").and_then(Value::as_str).unwrap_or("add");
+    if op == "add" && p.get("clips").is_some_and(Value::is_array) {
+        return add_to_clips(s, p);
+    }
     let Some(Subject::Clip(c)) = subject(s, p) else { return Err("select a clip (or give `clip`)".into()) };
     let q = s.active_sequence().ok_or("no video yet")?;
     if op == "add" {
@@ -1498,6 +1502,38 @@ pub fn effect(s: &mut Session, p: &Value) -> Result<Value, String> {
     r.map_err(|e| e.to_string())?;
     let enabled = s.active_sequence().and_then(|q| q.find_item(on)).and_then(|(_, it)| it.effects.get(index)).map(|e| e.enabled);
     Ok(json!({"clip": on.0, "index": index, "enabled": enabled}))
+}
+
+/// `br.video.effect` add with `clips`: the effect on each of them that it fits (a video effect on
+/// the pictures, an audio effect on the sound, a picture's own sound included), in one step.
+fn add_to_clips(s: &mut Session, p: &Value) -> Result<Value, String> {
+    let name = p.get("effect").and_then(Value::as_str).ok_or("give `effect` (an id or name, see br.video.schema)")?;
+    let def = filmcraft_project::effect::find_effect_by_name(name).ok_or_else(|| format!("unknown effect `{name}`"))?;
+    let q = s.active_sequence().ok_or("no video yet")?;
+    let clips: Vec<ClipId> = p["clips"].as_array().into_iter().flatten().filter_map(Value::as_u64).map(ClipId).collect();
+    let mut targets: Vec<ClipId> = Vec::new();
+    for c in clips {
+        let on_video = track_kind(q, c) == Some(TrackKind::Video);
+        let target = match def.kind {
+            filmcraft_project::EffectKind::Audio if on_video => linked_audio(q, c),
+            filmcraft_project::EffectKind::Audio => Some(c).filter(|c| track_kind(q, *c) == Some(TrackKind::Audio)),
+            filmcraft_project::EffectKind::Video => on_video.then_some(c),
+            _ => return Err(format!("{} is a transition: br.video.transition", def.name)),
+        };
+        if let Some(t) = target.filter(|t| !targets.contains(t) && q.find_item(*t).is_some()) {
+            targets.push(t);
+        }
+    }
+    if targets.is_empty() {
+        return Err(match def.kind {
+            filmcraft_project::EffectKind::Audio => "an audio effect needs a clip with sound".into(),
+            _ => "a video effect needs a video clip".into(),
+        });
+    }
+    let ids: Vec<u64> = targets.iter().map(|c| c.0).collect();
+    step(s, &format!("Effekt {}", def.name), None, |s| s.execute("effects.apply", json!({"clips": ids, "effect": def.id})))
+        .map_err(|e| e.to_string())?;
+    Ok(json!({"clips": ids, "clip": ids[0], "effect": def.id}))
 }
 
 /// `br.video.schema`: FilmCraft's effect definitions (all parameters with type, range, slider

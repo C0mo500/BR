@@ -110,6 +110,14 @@ pub fn finish(ctx: &egui::Context) {
     egui::DragAndDrop::clear_payload(ctx);
     let ui = egui::Ui::new(ctx.clone(), egui::Id::new("br_drop_probe"), egui::UiBuilder::new());
     panels::clear_drag(&ui);
+    forget_release(ctx);
+}
+
+/// FilmCraft keeps the frame of a drag's release (its ghost lingers one frame) and clears the
+/// next drag on its next release when the key is still there, which it is after a drop someone
+/// else took: the next drop would be lost before BR saw it.
+fn forget_release(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.remove::<u64>(egui::Id::new("drag-release-frame")));
 }
 
 /// The primary button was let go this frame (where a drag ends).
@@ -248,7 +256,7 @@ pub fn os_pointer(app: &BrApp, ctx: &egui::Context) -> Option<Pos2> {
 /// A drag let go over the Program monitor (after FilmCraft drew it): an overlay where it was
 /// dropped in the picture, the main track elsewhere on the panel; an effect onto the selected
 /// clip (else the one at the playhead).
-pub fn monitor(app: &mut BrApp, ctx: &egui::Context) {
+pub fn monitor(app: &mut BrApp, ctx: &egui::Context, held: Option<Payload>) {
     if !crate::timeline::visible(app) {
         return;
     }
@@ -257,7 +265,8 @@ pub fn monitor(app: &mut BrApp, ctx: &egui::Context) {
         return;
     }
     let Some(spot) = monitor_spot(app, p) else { return };
-    let Some(payload) = current(app, ctx) else { return };
+    // what was dragged as the frame began (FilmCraft may have cleared it since)
+    let Some(payload) = current(app, ctx).or(held) else { return };
     let outline = match spot {
         Spot::Picture(..) => app.fc.auto.find("program.picture"),
         _ => app.fc.auto.find("panel.Program"),

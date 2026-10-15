@@ -175,6 +175,13 @@ fn a_tile_dropped_on_the_picture_is_an_overlay_where_it_was_dropped() {
     let q = v.app.fc.session.active_sequence().unwrap();
     let pos = q.find_item(ClipId(clip)).unwrap().1.effect("motion").unwrap().params["position"].value.as_vec2().unwrap();
     assert!((pos.x - 270.0).abs() < 30.0 && (pos.y - 480.0).abs() < 50.0, "a quarter in: {pos:?}");
+    // a second drop right after it lands too (FilmCraft's drag ghost must not swallow it)
+    let tile = v.app.widgets[&format!("assets.media.{}", v.extra)];
+    let to = pos2(pic.min.x + pic.width() * 0.75, pic.min.y + pic.height() * 0.75);
+    v.d.drag(&mut v.app, tile.center(), to, 10);
+    assert!(v.d.settle(&mut v.app, SETTLE));
+    let p = placed(&v.app, v.extra);
+    assert_eq!(p.iter().filter(|x| x.1 >= 1 && x.1 < 100).count(), 2, "two overlays: {p:?}");
     let _ = std::fs::remove_dir_all(&v.dir);
 }
 

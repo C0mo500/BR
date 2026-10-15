@@ -105,6 +105,12 @@ fn workspace_of(page: Page) -> &'static str {
     }
 }
 
+/// Does FilmCraft show panel `p` itself, docked or floating? (BR then does not draw it again:
+/// FilmCraft's panels draw with their own ids, never twice in one frame.)
+pub(crate) fn fc_shows(fc: &FilmcraftApp, p: filmcraft_ui_egui::dock::PanelKind) -> bool {
+    fc.ui.dock.contains(p) || fc.ui.floating.iter().any(|g| g.panels.contains(&p))
+}
+
 /// FilmCraft's mode for a video page.
 fn mode_of(page: Page) -> FcMode {
     match page {

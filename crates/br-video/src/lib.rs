@@ -340,8 +340,8 @@ pub const COMMANDS: &[CommandInfo] = &[
     },
     CommandInfo {
         id: "br.video.effect",
-        params: r#"{"op":"add|remove|enable|disable|reset","effect":id|name|index|"adjust","param":str?,"clip":id?,"on":id?}"#,
-        summary: "Add an effect to the selected clip (an audio effect goes on its sound), or remove, switch off/on or reset one (`on`: the clip it is on, e.g. the linked sound)",
+        params: r#"{"op":"add|remove|enable|disable|reset","effect":id|name|index|"adjust","param":str?,"clip":id?,"clips":[id]?,"on":id?}"#,
+        summary: "Add an effect to the selected clip (an audio effect goes on its sound; with `clips` onto each of them it fits, one undo step), or remove, switch off/on or reset one (`on`: the clip it is on, e.g. the linked sound)",
     },
     CommandInfo {
         id: "br.video.schema",

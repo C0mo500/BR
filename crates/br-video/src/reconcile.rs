@@ -184,17 +184,20 @@ pub fn unlock_new_tracks(s: &mut Session, before: &[filmcraft_project::TrackId])
     let locked_new = s.active_sequence().is_some_and(|q| {
         q.all_tracks().any(|t| t.sync_lock && !before.contains(&t.id)) || q.caption_tracks.iter().any(|t| t.sync_lock && !before.contains(&t.id))
     });
-    // a new video's own tracks are set up by the command that made it; with linkage off the
-    // tracks keep FilmCraft's sync lock
+    // with linkage off the tracks keep FilmCraft's sync lock; a new video's main track, its sound
+    // and the backgrounds keep theirs (a command that made a new video and added music or titles
+    // to it, as a template does, unlocks those)
     let linkage = s.active_sequence().is_some_and(|q| main_track::settings(q).linkage);
-    if !locked_new || before.is_empty() || !linkage {
+    if !locked_new || !linkage {
         return;
     }
     let main = s.active_sequence().and_then(main_track::main_track_id);
     let main_audio = s.active_sequence().and_then(main_track::main_audio_track);
     let r = amend_last(s, "BR", |q, _| {
         let mut unlocked = Vec::new();
-        for t in q.all_tracks_mut().filter(|t| t.sync_lock && !before.contains(&t.id) && Some(t.id) != main && Some(t.id) != main_audio) {
+        for t in q.all_tracks_mut().filter(|t| {
+            t.sync_lock && !before.contains(&t.id) && Some(t.id) != main && Some(t.id) != main_audio && !main_track::is_background_track(t)
+        }) {
             t.sync_lock = false;
             unlocked.push(t.id);
         }
