@@ -763,6 +763,12 @@ pub fn de(s: &str) -> &str {
         "blur" => "Unscharf",
         "color" => "Farbe",
         "image" => "Bild",
+        "montage" => "Montage",
+        "held" => "Held",
+        "bullet" => "Bullet",
+        "sprung" => "Sprung",
+        "blitzRein" => "Blitz rein",
+        "blitzRaus" => "Blitz raus",
         other => other,
     }
 }

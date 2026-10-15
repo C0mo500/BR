@@ -247,6 +247,22 @@ fn bar(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
     if r.clicked() {
         app.timeline.full = !full;
     }
+    // the music's beats as markers to snap to (again: away)
+    let has_beats = app.fc.session.active_sequence().is_some_and(|q| !br_video::beats::markers(q).is_empty());
+    let r = crate::cut::tool(
+        &mut row,
+        t,
+        Icon::Marker,
+        "Beats",
+        if has_beats { "Die Beat-Marker entfernen" } else { "Die Beats der Musik (oder des ausgewählten Tons) markieren: Clips rasten daran ein" },
+        has_beats,
+        true,
+    );
+    app.widgets.insert("tl.beats".into(), r.rect);
+    if r.clicked() {
+        let ctx = row.ctx().clone();
+        crate::cut::run(app, &ctx, "br.video.beats", json!({"mode": if has_beats { "none" } else { "beats" }}));
+    }
     // the time: where the playhead is, and how long the video is
     if let Some(q) = app.fc.session.active_sequence() {
         let rate = q.settings.frame_rate;
@@ -413,8 +429,14 @@ fn canvas(app: &mut BrApp, ui: &mut Ui, t: &Theme, rect: Rect) {
     }
     let view = View { lane, pps: st.pps, scroll: st.scroll };
 
-    // ruler
+    // ruler, with the beats of the music
     paint_ruler(&painter, t, ruler, &view, q.settings.frame_rate);
+    for b in br_video::beats::markers(q) {
+        let x = view.x(Tick::from_seconds_f64(b));
+        if x >= ruler.min.x && x <= ruler.max.x {
+            painter.circle_filled(pos2(x, ruler.max.y - 3.0), 2.5, Color32::from_rgb(0xff, 0xd0, 0x40));
+        }
+    }
     let rid = ui.id().with("br_tl_ruler");
     let rr = ui.interact(ruler, rid, Sense::click_and_drag());
     app.widgets.insert("tl.ruler".into(), ruler);
@@ -727,6 +749,10 @@ fn draw_clip(
     let mut label = it.name.clone();
     if (it.speed - 1.0).abs() > 1e-6 || it.reverse {
         label = format!("{label}  {}{}×", if it.reverse { "◀ " } else { "" }, (it.speed * 100.0).round() / 100.0);
+    }
+    if let Some((curve, _)) = br_video::speed::curve_of(q, it.id) {
+        let name = br_video::speed::find_curve(&curve).map_or(curve.as_str(), |c| c.label);
+        label = format!("{label}  ∿ {name}");
     }
     if main_track::partners(q, it.id).iter().any(|c| q.find_item(*c).is_some_and(|(_, x)| main_track::is_background(x))) {
         label = format!("{label}  · Hintergrund");

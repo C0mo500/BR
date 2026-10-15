@@ -138,6 +138,8 @@ enum T {
     BgColor,
     /// The picture fills the frame and follows its subject (`br.video.reframe`).
     Reframe,
+    /// A speed curve (`br.video.curve`).
+    Curve,
 }
 
 struct Row {
@@ -229,8 +231,11 @@ const ADJUST: Section = Section {
     ],
 };
 
-const SPEED: Section =
-    Section { key: "speed", label: "Tempo", rows: &[rs("speed", "Tempo", T::Speed, 0.1, 10.0), r("reverse", "Rückwärts", T::Reverse)] };
+const SPEED: Section = Section {
+    key: "speed",
+    label: "Tempo",
+    rows: &[rs("speed", "Tempo", T::Speed, 0.1, 10.0), r("curve", "Kurve", T::Curve), r("reverse", "Rückwärts", T::Reverse)],
+};
 
 const CLIP_AUDIO: Section = Section {
     key: "audio",
@@ -776,6 +781,14 @@ fn row_json(cx: &Ctx, subject: Subject, section: &Section, row: &Row) -> Option<
                     plain(&mut m, "bool", json!(it.effect("auto_reframe").is_some()), json!(false))
                 }
                 T::Reframe => return None,
+                // curves are for pictures (their sound goes along)
+                T::Curve if track_kind(q, c) == Some(TrackKind::Video) => {
+                    let id = crate::speed::curve_of(q, c).map_or("none".to_string(), |x| x.0);
+                    plain(&mut m, "choice", json!(id), json!("none"));
+                    let opts: Vec<&str> = std::iter::once("none").chain(crate::speed::CURVES.iter().map(|c| c.id)).collect();
+                    m.insert("options".into(), json!(opts));
+                }
+                T::Curve => return None,
                 T::DuckDb => {
                     let db = it.essential.as_ref().map_or(-15.0, |e| e.ducking.reduce_db);
                     float(&mut m, db, -15.0, (-40.0, 0.0), "dB", 1);
@@ -1203,6 +1216,12 @@ fn apply(s: &mut Session, tg: &Target, value: Value, input: Option<Value>, keyfr
                 }
             };
             crate::frame::background(s, &p).map_err(other)?;
+            Ok(None)
+        }
+        (Subject::Clip(_), T::Curve) => {
+            let c = tg.clip.ok_or_else(|| other("no clip"))?;
+            let id = value.as_str().ok_or_else(|| other("Kurve: none, montage, held, bullet, sprung, blitzRein, blitzRaus"))?;
+            crate::speed::curve(s, &json!({"clips": [c.0], "preset": id})).map_err(other)?;
             Ok(None)
         }
         (Subject::Clip(_), T::Reframe) => {

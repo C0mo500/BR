@@ -29,6 +29,9 @@
 //! | `br.video.transform`, `br.video.fit` | where a picture is in the frame; fit, fill, reset |
 //! | `br.video.background` | fill the frame behind the main clips: blurred, a colour or a picture |
 //! | `br.video.reframe` | pictures of another shape fill the frame and follow their subject |
+//! | `br.video.curve`, `br.video.freeze`, `br.video.reverse` | speed curves (baked), freeze frames, backwards |
+//! | `br.video.beats` | the music's beats as markers the timelines snap to |
+//! | `br.video.template.*` | video templates: list, new (placeholders), fill with media, save the video as one |
 //! | `br.video.format` | another shape (9:16, 16:9, 1:1, 4:5); the clips fit or fill it |
 //! | `br.video.transition` | the default transition (a dissolve) at the cuts of the selected clips |
 //! | `br.video.export` | an MP4 in a preset for TikTok/Reels/Shorts, YouTube, … |
@@ -42,6 +45,7 @@ use serde_json::{Value, json};
 pub use filmcraft_engine::Session;
 
 pub mod anchors;
+pub mod beats;
 pub mod frame;
 pub mod inspect;
 pub mod magnet;
@@ -49,6 +53,8 @@ pub mod main_track;
 pub mod place;
 pub mod reconcile;
 pub mod speech;
+pub mod speed;
+pub mod template;
 
 /// A video's shape.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -266,6 +272,46 @@ pub const COMMANDS: &[CommandInfo] = &[
         id: "br.video.reframe",
         params: r#"{"clips":[id]?,"on":bool=true,"speed":"slow|default|fast"="default"}"#,
         summary: "Pictures of another shape than the frame fill it and follow their subject (Auto Reframe); on:false: they fit again",
+    },
+    CommandInfo {
+        id: "br.video.curve",
+        params: r#"{"preset":"montage|held|bullet|sprung|blitzRein|blitzRaus|none","clips":[id]?}"#,
+        summary: "A speed curve on the selected clips (else the main clip at the playhead), baked into pieces of constant speed (one undo step); the video moves up or on; none puts the clip back together",
+    },
+    CommandInfo {
+        id: "br.video.freeze",
+        params: r#"{"seconds":f64=3,"at":f64?,"clip":id?}"#,
+        summary: "Freeze the picture at the playhead (or `at`) for `seconds`; the rest of the clip and the video move on",
+    },
+    CommandInfo {
+        id: "br.video.reverse",
+        params: r#"{"clips":[id]?}"#,
+        summary: "Play the selected clips backwards (again forwards); a speed curve goes along",
+    },
+    CommandInfo {
+        id: "br.video.beats",
+        params: r#"{"clip":id?,"mode":"beats|bars|half|onsets|none"="beats"}"#,
+        summary: "Markers on the beats of the music (or `clip`'s sound): every beat, every bar, every half beat or every hit; the timelines snap to them; none removes them",
+    },
+    CommandInfo {
+        id: "br.video.template.list",
+        params: r#"{"dir":str?}"#,
+        summary: "The video templates: BR's and the user's (id, name, format, slots, length, whether they cut on beats); `dir`: another folder of the user's",
+    },
+    CommandInfo {
+        id: "br.video.template.new",
+        params: r#"{"template":id|name|path,"music":str?,"dir":str?}"#,
+        summary: "A new video from a template: grey placeholders, titles, transitions, look; with `music` under it (slots in beats cut on its beats). One undo step",
+    },
+    CommandInfo {
+        id: "br.video.template.fill",
+        params: r#"{"paths":[str]?,"items":[id]?,"fit":"fill|fit"="fill","all":bool?}"#,
+        summary: "Put media into the template's empty placeholders, in order (a clip too short for its slot plays slower); the template's curves and background follow. One undo step",
+    },
+    CommandInfo {
+        id: "br.video.template.save",
+        params: r#"{"name":str,"description":str?,"dir":str?}"#,
+        summary: "Keep the video's shape as a template of your own: format, clip lengths with curves and transitions, titles, background",
     },
     CommandInfo {
         id: "br.video.format",
@@ -705,7 +751,7 @@ pub fn execute_with(s: &mut Session, w: &mut reconcile::Watch, id: &str, p: &Val
     r
 }
 
-fn execute_br(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
+pub(crate) fn execute_br(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
     match id {
         "br.video.new" => {
             let key = p.get("format").and_then(Value::as_str).unwrap_or("16:9");
@@ -1274,6 +1320,14 @@ fn execute_br(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
         }
         "br.video.state" => state(s),
         "br.video.inspect" => inspect::inspect(s, p),
+        "br.video.template.list" => Ok(template::list(p)),
+        "br.video.template.new" => template::new(s, p).map_err(|e| err(id, e)),
+        "br.video.template.fill" => template::fill(s, p).map_err(|e| err(id, e)),
+        "br.video.template.save" => template::save(s, p).map_err(|e| err(id, e)),
+        "br.video.curve" => speed::curve(s, p).map_err(|e| err(id, e)),
+        "br.video.freeze" => speed::freeze(s, p).map_err(|e| err(id, e)),
+        "br.video.reverse" => speed::reverse(s, p).map_err(|e| err(id, e)),
+        "br.video.beats" => beats::beats(s, p).map_err(|e| err(id, e)),
         "br.video.transform" => frame::transform(s, p).map_err(|e| err(id, e)),
         "br.video.fit" => frame::fit(s, p).map_err(|e| err(id, e)),
         "br.video.background" => frame::background(s, p).map_err(|e| err(id, e)),

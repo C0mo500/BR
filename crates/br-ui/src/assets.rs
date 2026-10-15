@@ -31,11 +31,12 @@ pub enum Tab {
     Effects,
     Transitions,
     Looks,
+    Templates,
     Profi,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 7] = [Tab::Media, Tab::Audio, Tab::Text, Tab::Effects, Tab::Transitions, Tab::Looks, Tab::Profi];
+    pub const ALL: [Tab; 8] = [Tab::Media, Tab::Audio, Tab::Text, Tab::Effects, Tab::Transitions, Tab::Looks, Tab::Templates, Tab::Profi];
 
     pub fn key(self) -> &'static str {
         match self {
@@ -45,6 +46,7 @@ impl Tab {
             Tab::Effects => "effects",
             Tab::Transitions => "transitions",
             Tab::Looks => "looks",
+            Tab::Templates => "templates",
             Tab::Profi => "profi",
         }
     }
@@ -57,6 +59,7 @@ impl Tab {
             Tab::Effects => "Effekte",
             Tab::Transitions => "Übergänge",
             Tab::Looks => "Filter",
+            Tab::Templates => "Vorlagen",
             Tab::Profi => "Profi",
         }
     }
@@ -137,6 +140,7 @@ pub fn show(app: &mut BrApp, ui: &mut Ui) {
                         Tab::Text => text(app, ui, &t),
                         Tab::Effects => effects(app, ui, &t),
                         Tab::Transitions => transitions(app, ui, &t),
+                        Tab::Templates => templates(app, ui, &t),
                         _ => looks(app, ui, &t),
                     });
                 }
@@ -455,6 +459,56 @@ fn looks(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
         }
         if r.drag_started() {
             panels::start_drag_lumetri_preset(ui, l.name);
+        }
+    }
+}
+
+/// A new video from a template; one that cuts on beats asks for its music first.
+pub fn new_from_template(app: &mut BrApp, ctx: &egui::Context, id: &str, beats: bool) {
+    if beats {
+        app.cut.template = Some(id.to_string());
+        crate::cut::pick(app, ctx, crate::cut::PickFor::TemplateMusic);
+        return;
+    }
+    if crate::cut::run(app, ctx, "br.video.template.new", json!({"template": id})).is_some() {
+        app.assets.tab = Tab::Templates;
+        crate::cut::toast(app, ctx, "Vorlage angelegt: jetzt „Medien einsetzen“");
+    }
+}
+
+/// Vorlagen: media into the placeholders of this video, a new video from a template, this video
+/// kept as a template.
+fn templates(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
+    let ctx = ui.ctx().clone();
+    let empty = br_video::template::empty_placeholders(&app.fc.session).len();
+    if empty > 0 {
+        let r = crate::style::button(ui, t, &format!("Medien einsetzen ({empty} frei)"), true, app.cut.picking.is_none());
+        app.widgets.insert("assets.template.fill".into(), r.rect);
+        if r.clicked() {
+            crate::cut::pick(app, &ctx, crate::cut::PickFor::Template);
+        }
+        ui.label(RichText::new("Die Medien füllen die grauen Platzhalter der Reihe nach.").size(11.5).color(t.dim));
+        ui.add_space(6.0);
+    }
+    let r = crate::style::button(ui, t, "Dieses Video als Vorlage speichern", false, true);
+    app.widgets.insert("assets.template.save".into(), r.rect);
+    if r.clicked() {
+        let s = &app.fc.session;
+        let name = s.state.active_sequence.and_then(|id| s.project.item(id)).map(|i| i.name.clone()).unwrap_or_else(|| "Meine Vorlage".into());
+        if let Some(v) = crate::cut::run(app, &ctx, "br.video.template.save", json!({"name": name})) {
+            crate::cut::toast(app, &ctx, format!("Als Vorlage gespeichert: {}", v["path"].as_str().unwrap_or("")));
+        }
+    }
+    crate::style::heading(ui, t, "NEUES VIDEO AUS VORLAGE");
+    let list = br_video::template::list(&json!({}));
+    for tpl in list.as_array().into_iter().flatten() {
+        let id = tpl["id"].as_str().unwrap_or("").to_string();
+        let detail =
+            format!("{} · {} Szenen{}", tpl["format"].as_str().unwrap_or(""), tpl["slots"], if tpl["beats"] == true { " · im Takt" } else { "" });
+        let r = tile_row(ui, t, tpl["name"].as_str().unwrap_or(&id), &detail).on_hover_text(tpl["description"].as_str().unwrap_or(""));
+        app.widgets.insert(format!("assets.template.{id}"), r.rect);
+        if r.clicked() {
+            new_from_template(app, &ctx, &id, tpl["beats"] == true);
         }
     }
 }

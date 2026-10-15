@@ -95,6 +95,10 @@ pub(crate) enum PickFor {
     /// Media into the project only (the asset bar), to be dragged in where wanted.
     Import,
     ImportSound,
+    /// Media into the video template's empty placeholders.
+    Template,
+    /// Music for a template that cuts on beats (`CutState::template`).
+    TemplateMusic,
 }
 
 /// A video export FilmCraft runs (a job in its session).
@@ -119,6 +123,8 @@ pub struct CutState {
     /// The language chosen for automatic captions (a key of [`LANGUAGES`]).
     pub caption_language: &'static str,
     /// A new format makes the clips fill the frame instead of fitting into it.
+    /// The template waiting for its music (a template that cuts on beats).
+    pub(crate) template: Option<String>,
     /// How clips meet a new format: fit, fill, reframe (fill following their subject).
     pub fit_mode: &'static str,
     /// The start screen was left without a video ("Leerer Editor").
@@ -145,6 +151,7 @@ impl Default for CutState {
             captions: None,
             caption_language: "auto",
             fit_mode: "fit",
+            template: None,
             start_dismissed: false,
             picking: None,
             looks: None,
@@ -542,6 +549,8 @@ pub(crate) fn pick(app: &mut BrApp, ctx: &egui::Context, what: PickFor) {
         PickFor::Music => (Pick::Music, "Musik hinzufügen", desktop::import_dir()),
         PickFor::Import => (Pick::Media, "Medien importieren", desktop::import_dir()),
         PickFor::ImportSound => (Pick::Music, "Musik oder Ton importieren", desktop::import_dir()),
+        PickFor::Template => (Pick::Media, "Medien für die Vorlage", desktop::import_dir()),
+        PickFor::TemplateMusic => (Pick::Music, "Musik für die Vorlage", desktop::import_dir()),
         PickFor::ExportFolder => (Pick::Folder, "Export-Ordner", Some(app.cut.export_dir.clone()).filter(|d| d.is_dir())),
     };
     match desktop::pick(ctx, kind, title, start) {
@@ -578,6 +587,21 @@ fn poll_pick(app: &mut BrApp, ctx: &egui::Context) {
             run(app, ctx, "file.import", json!({"paths": paths}));
         }
         PickFor::Import | PickFor::ImportSound => {}
+        PickFor::Template if !paths.is_empty() => {
+            run(app, ctx, "br.video.template.fill", json!({"paths": paths}));
+        }
+        PickFor::Template => {}
+        PickFor::TemplateMusic => {
+            if let Some(id) = app.cut.template.take() {
+                let mut p = json!({"template": id});
+                if let Some(m) = paths.first() {
+                    p["music"] = json!(m);
+                }
+                if run(app, ctx, "br.video.template.new", p).is_some() {
+                    toast(app, ctx, "Vorlage angelegt: jetzt „Medien einsetzen“ (links unter Vorlagen)");
+                }
+            }
+        }
     }
 }
 
@@ -907,7 +931,44 @@ fn speed_panel(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
     if let Some(f) = chosen {
         run(app, &ctx, "br.video.speed", json!({"speed": f}));
     }
-    note(ui, t, "Die Clips danach rücken nach. Tempo-Rampen und Rückwärts: Clip › Geschwindigkeit/Dauer.");
+    // curves: baked into pieces of constant speed
+    style::heading(ui, t, "KURVE");
+    let curve = {
+        let s = &app.fc.session;
+        s.active_sequence().and_then(|q| s.state.selection.iter().find_map(|c| br_video::speed::curve_of(q, *c))).map(|c| c.0)
+    };
+    let mut pick = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+        let none = std::iter::once(("none", "Keine"));
+        for (id, label) in none.chain(br_video::speed::CURVES.iter().map(|c| (c.id, c.label))) {
+            let on = curve.as_deref().unwrap_or("none") == id;
+            let r = ui.selectable_label(on, label);
+            app.widgets.insert(format!("speed.curve.{id}"), r.rect);
+            if r.clicked() && !on {
+                pick = Some(id);
+            }
+        }
+    });
+    if let Some(id) = pick {
+        run(app, &ctx, "br.video.curve", json!({"preset": id}));
+    }
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        let r = style::button(ui, t, "Einfrieren (3 s)", false, true)
+            .on_hover_text("Das Bild am Abspielkopf steht 3 Sekunden still, der Rest rückt nach");
+        app.widgets.insert("speed.freeze".into(), r.rect);
+        if r.clicked() {
+            run(app, &ctx, "br.video.freeze", json!({"seconds": 3.0}));
+        }
+        let r =
+            style::button(ui, t, "Rückwärts", false, true).on_hover_text("Die ausgewählten Clips laufen rückwärts (noch einmal: wieder vorwärts)");
+        app.widgets.insert("speed.reverse".into(), r.rect);
+        if r.clicked() {
+            run(app, &ctx, "br.video.reverse", json!({}));
+        }
+    });
+    note(ui, t, "Die Clips danach rücken nach. Eine Kurve teilt den Clip in Stücke mit eigenem Tempo; „Keine“ setzt ihn wieder zusammen.");
 }
 
 /// FilmCraft's look folders in German.
@@ -1158,6 +1219,24 @@ fn start_card(app: &mut BrApp, ui: &mut Ui, t: &Theme, width: f32) {
     });
     ui.add_space(10.0);
     note(ui, t, "Oder Videos, Fotos und Musik einfach hierher ziehen.");
+    // or a template: placeholders to fill
+    ui.add_space(14.0);
+    style::heading(ui, t, "MIT VORLAGE");
+    let templates = br_video::template::list(&json!({}));
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(10.0, 10.0);
+        let w = ((width - 30.0) / 4.0).max(120.0);
+        for tpl in templates.as_array().into_iter().flatten() {
+            let id = tpl["id"].as_str().unwrap_or("").to_string();
+            let name = tpl["name"].as_str().unwrap_or(&id).to_string();
+            let detail = format!("{} · {} Szenen · {} s", tpl["format"].as_str().unwrap_or(""), tpl["slots"], tpl["seconds"]);
+            let r = style::card(ui, t, &name, &detail, false, w).on_hover_text(tpl["description"].as_str().unwrap_or(""));
+            app.widgets.insert(format!("start.template.{id}"), r.rect);
+            if r.clicked() {
+                crate::assets::new_from_template(app, &ctx, &id, tpl["beats"] == true);
+            }
+        }
+    });
     let recent: Vec<String> =
         app.fc.session.prefs.general.recent_projects.iter().filter(|p| std::path::Path::new(p).exists()).take(5).cloned().collect();
     if !recent.is_empty() {
