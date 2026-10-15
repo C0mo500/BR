@@ -763,6 +763,8 @@ dependencies = [
 name = "br-video"
 version = "0.1.0"
 dependencies = [
+ "filmcraft-audio-dsp",
+ "filmcraft-edit",
  "filmcraft-engine",
  "filmcraft-media",
  "filmcraft-project",

@@ -59,13 +59,21 @@ USAGE
       16:9. P: instagram (1080x1350), story (1080x1920), square, wide, full (default).
       OUT is a .jpg/.jpeg file or a folder (default: $BR_EXPORTS or ~/Pictures/BR Exports).
 
-  br run [--library DIR | --demo] [--import PATH]… [--keep-going] CMD [key=value…] [CMD …]
+  br run [--library DIR | --demo] [--import PATH]… [--script FILE|-]… [--keep-going]
+         [CMD [key=value…] …]
       Run commands and print one JSON line each: BR's br.* photo commands and br.video.* video
       commands (see `br commands`), any LightCraft command (develop.set, library.select, …) and
       any FilmCraft command as film.<id> (film.timeline.razor, …). Values are JSON, else text
       (dir, path, look, format, preset, text, language, model, name and fit are always text).
       Imported photos are selected;
       imported videos, sound and subtitles go into the video (as br.video.add).
+      --script runs the commands of a file (- reads standard input) after those on the command
+      line: one JSON object per line, {\"command\": \"br.video.split\", \"params\": {\"seconds\": 2}};
+      empty lines and lines starting with # are skipped.
+
+  br film [--import PATH]… [--script FILE|-]… [--keep-going] CMD [key=value…] [CMD …]
+      `br run` for FilmCraft: every CMD is a FilmCraft command without the film. prefix
+      (br film timeline.razor time=0 sequence.inspect).
 
   br commands [--film]  BR's commands and their parameters (--film: FilmCraft's)
   br looks [--json]   the looks
@@ -107,7 +115,7 @@ fn main() {
     lightcraft_engine::memory::set_release_hook(release_free_memory);
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (cmd, rest) = match args.first().map(String::as_str) {
-        Some("mcp" | "photo" | "run" | "commands" | "looks" | "snapshot" | "app" | "help") => (args[0].clone(), args[1..].to_vec()),
+        Some("mcp" | "photo" | "run" | "film" | "commands" | "looks" | "snapshot" | "app" | "help") => (args[0].clone(), args[1..].to_vec()),
         _ => ("app".to_string(), args),
     };
     // only the window keeps a log file
@@ -121,6 +129,7 @@ fn main() {
         "mcp" => mcp(&rest),
         "photo" => photo(&rest),
         "run" => run(&rest),
+        "film" => film(&rest),
         "commands" => list_commands(&rest),
         "looks" => looks(&rest),
         "snapshot" => snapshot(&rest),
@@ -719,22 +728,72 @@ fn parse_steps(tokens: &[String]) -> Result<Vec<Step>, String> {
     Ok(steps)
 }
 
+/// The commands of a `--script` file (`-`: standard input): one JSON object per line,
+/// `{"command": ID, "params": {…}}`; empty lines and `#` comments are skipped.
+fn script_steps(path: &str) -> Result<Vec<Step>, String> {
+    let text = if path == "-" {
+        let mut t = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut t).map_err(|e| format!("standard input: {e}"))?;
+        t
+    } else {
+        std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?
+    };
+    let mut steps = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let at = || format!("{path}:{}", n + 1);
+        let v: Value = serde_json::from_str(line).map_err(|e| format!("{}: not a JSON line: {e}", at()))?;
+        let id = v.get("command").and_then(Value::as_str).ok_or_else(|| format!("{}: needs \"command\"", at()))?;
+        let params = match v.get("params") {
+            None | Some(Value::Null) => json!({}),
+            Some(p @ Value::Object(_)) => p.clone(),
+            Some(_) => return Err(format!("{}: \"params\" must be a JSON object", at())),
+        };
+        steps.push(Step { id: id.to_string(), params });
+    }
+    Ok(steps)
+}
+
+/// `br film`: `br run` with FilmCraft's command ids (the film. prefix added).
+fn film(args: &[String]) -> Result<(), String> {
+    let mut out = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            // options with a value: the value is no command
+            "--import" | "--script" | "--library" => out.extend([Some(a), it.next()].into_iter().flatten().cloned()),
+            _ if a.starts_with('-') || a.starts_with('{') || a.contains('=') => out.push(a.clone()),
+            _ if a.starts_with("film.") || a.starts_with("br.") => out.push(a.clone()),
+            _ => out.push(format!("film.{a}")),
+        }
+    }
+    run(&out)
+}
+
 fn run(args: &[String]) -> Result<(), String> {
     let mut opts = Opts::default();
     let mut imports = Vec::new();
     let mut keep_going = false;
     let mut tokens = Vec::new();
+    let mut scripts = Vec::new();
     let rest = library_opts(args, &mut opts)?;
     let mut it = rest.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--import" => imports.push(it.next().ok_or("--import needs a path")?.clone()),
+            "--script" => scripts.push(it.next().ok_or("--script needs a file (or - for standard input)")?.clone()),
             "--keep-going" => keep_going = true,
             _ if a.starts_with("--") && tokens.is_empty() => return Err(format!("unknown option `{a}` (see br --help)")),
             _ => tokens.push(a.clone()),
         }
     }
-    let steps = parse_steps(&tokens)?;
+    let mut steps = parse_steps(&tokens)?;
+    for script in &scripts {
+        steps.extend(script_steps(script)?);
+    }
     if steps.is_empty() {
         return Err("no command: br run [--demo] CMD key=value … (see br commands)".into());
     }

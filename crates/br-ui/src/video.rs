@@ -32,11 +32,20 @@ pub struct VideoState {
     frame: eframe::Frame,
     /// Frames in a row in which a font family was missing.
     fonts_missing: u32,
+    /// What BR last reconciled of the video: edits made with FilmCraft's own tools are followed by
+    /// what hangs on the main clips they changed ([`br_video::reconcile`]).
+    pub watch: br_video::reconcile::Watch,
 }
 
 impl Default for VideoState {
     fn default() -> Self {
-        Self { docks: HashMap::new(), shown: None, frame: eframe::Frame::_new_kittest(), fonts_missing: 0 }
+        Self {
+            docks: HashMap::new(),
+            shown: None,
+            frame: eframe::Frame::_new_kittest(),
+            fonts_missing: 0,
+            watch: br_video::reconcile::Watch::default(),
+        }
     }
 }
 
@@ -206,6 +215,15 @@ pub fn logic(fc: &mut FilmcraftApp, st: &mut VideoState, ctx: &egui::Context, sh
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
     }
+    // edits FilmCraft's control channel (or a finished job) just made
+    follow(fc, st, ctx);
+}
+
+/// Let what hangs on the main clips follow an edit made with FilmCraft's own tools, in its step.
+pub fn follow(fc: &mut FilmcraftApp, st: &mut VideoState, ctx: &egui::Context) {
+    if br_video::reconcile::catch_up(&mut fc.session, &mut st.watch) {
+        ctx.request_repaint();
+    }
 }
 
 /// FilmCraft's raw-input hook (window focus, synthetic input of its control channel).
@@ -221,6 +239,8 @@ pub fn ui(fc: &mut FilmcraftApp, st: &mut VideoState, ui: &mut egui::Ui) -> egui
         ui.set_clip_rect(rect);
         eframe::App::ui(fc, ui, &mut st.frame);
     });
+    // in the same frame as the gesture in FilmCraft's timeline, menus or panels
+    follow(fc, st, ui.ctx());
     rect
 }
 

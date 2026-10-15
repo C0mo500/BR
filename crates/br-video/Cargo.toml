@@ -7,6 +7,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+filmcraft-audio-dsp = { workspace = true }
+filmcraft-edit = { workspace = true }
 filmcraft-engine = { workspace = true }
 filmcraft-media = { workspace = true }
 filmcraft-project = { workspace = true }

@@ -250,7 +250,7 @@ fn running_exports(app: &BrApp) -> Vec<u64> {
 /// Run one of BR's video commands (or FilmCraft's) on the video project; a failure is told in the
 /// toast.
 fn run(app: &mut BrApp, ctx: &egui::Context, id: &str, params: Value) -> Option<Value> {
-    match br_video::execute(&mut app.fc.session, id, &params) {
+    match br_video::execute_with(&mut app.fc.session, &mut app.video.watch, id, &params) {
         Ok(v) => Some(v),
         Err(e) => {
             log::warn!("{id}: {e}");

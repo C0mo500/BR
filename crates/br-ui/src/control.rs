@@ -454,14 +454,14 @@ fn handle(app: &mut BrApp, ctx: &egui::Context, req: &ControlRequest) -> Option<
 
 fn run_command(app: &mut BrApp, ctx: &egui::Context, id: &str, params: Value, reply: &Sender<Value>) -> Option<Value> {
     if let Some(film) = id.strip_prefix("film.") {
-        return Some(wrap(br_video::execute(&mut app.fc.session, film, &params)));
+        return Some(wrap(br_video::execute_with(&mut app.fc.session, &mut app.video.watch, film, &params)));
     }
     match id {
         // long work runs in the background, as in the window; the reply waits for it
         "br.video.export" if params.get("wait").and_then(Value::as_bool).unwrap_or(true) => {
             let mut q = params.clone();
             q["wait"] = json!(false);
-            match br_video::execute(&mut app.fc.session, id, &q) {
+            match br_video::execute_with(&mut app.fc.session, &mut app.video.watch, id, &q) {
                 Ok(v) => match (v.get("job").and_then(Value::as_u64), v.get("path").and_then(Value::as_str), v.get("part").and_then(Value::as_str)) {
                     (Some(job), Some(path), Some(part)) => {
                         app.pending.push(Pending::Export { job, path: PathBuf::from(path), part: PathBuf::from(part), reply: reply.clone() });
@@ -491,7 +491,7 @@ fn run_command(app: &mut BrApp, ctx: &egui::Context, id: &str, params: Value, re
         "br.video.cancel" if params.get("captions").and_then(Value::as_bool) == Some(true) => {
             Some(ok(json!({"cancelled": crate::cut::cancel_captions(app)})))
         }
-        _ if br_video::is_video(id) => Some(wrap(br_video::execute(&mut app.fc.session, id, &params))),
+        _ if br_video::is_video(id) => Some(wrap(br_video::execute_with(&mut app.fc.session, &mut app.video.watch, id, &params))),
         _ => {
             crate::photo::finish_drags(app);
             Some(wrap(br_photo::commands::execute(&mut app.lc.session, &mut app.photo.br, id, &params).map_err(|e| e.to_string())))

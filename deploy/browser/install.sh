@@ -31,11 +31,14 @@ command -v apt-get >/dev/null || { echo "Dieses Skript kennt nur Debian/Ubuntu (
 step "Pakete"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
+# libasound2-dev: BR spielt den Ton von Videos über ALSA ab; das Paket bringt die Bibliothek zum Bauen
+# und zum Laufen mit
 apt-get install -y -q --no-install-recommends \
     tigervnc-standalone-server tigervnc-tools novnc python3-websockify openbox zenity python3 \
     libgl1 libglx-mesa0 libgl1-mesa-dri libegl1 libx11-6 libx11-xcb1 libxcursor1 libxi6 libxrandr2 \
     libxkbcommon0 libxkbcommon-x11-0 fonts-dejavu-core \
-    ca-certificates curl git build-essential pkg-config
+    ca-certificates curl git build-essential pkg-config \
+    libasound2-dev
 
 if [ -z "$bin" ]; then
     step "BR bauen (beim ersten Mal 10–30 Minuten)"

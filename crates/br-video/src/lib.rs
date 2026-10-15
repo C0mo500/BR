@@ -2,13 +2,23 @@
 //! the CLI and `br mcp`. Each command is one undo step (FilmCraft's `edit_group`), built from
 //! FilmCraft's own commands, so everything it does can be refined in FilmCraft's panels.
 //!
+//! The video is built CapCut's way on FilmCraft's sequence: a magnetic main track ([`magnet`],
+//! [`main_track`]) and titles, overlays, sound effects and captions attached to its clips
+//! ([`anchors`]), also when the edit is made with FilmCraft's own tools ([`reconcile`]).
+//!
 //! | Command | What it does |
 //! |---|---|
 //! | `br.video.new` | a new video in a social format (9:16, 16:9, 1:1, 4:5) |
-//! | `br.video.add` | import files and put them one after another at the end of the main track |
-//! | `br.video.split` | cut every clip under the playhead (Add Edit) |
-//! | `br.video.delete` | delete the selected clips and close the gap (Ripple Delete) |
-//! | `br.video.speed` | play the selected clips faster or slower, the gap closes or opens |
+//! | `br.video.add` | import files and put them one after another on the main track (at its end or a cut) |
+//! | `br.video.split` | cut the selected clip (else the main clip) at the playhead |
+//! | `br.video.delete` | delete the selected clips; the main track closes up, what hung on them goes too |
+//! | `br.video.speed` | play the selected clips faster or slower, the rest moves up or on |
+//! | `br.video.move` | reorder the main track, or move a clip onto or off it |
+//! | `br.video.trim` | move a clip's edge (main clips ripple) |
+//! | `br.video.duplicate` | a copy of the selected clips right after them |
+//! | `br.video.pack` | close the main track's gaps |
+//! | `br.video.magnet`, `br.video.linkage` | CapCut's switches: magnetic main track, attached clips follow |
+//! | `br.video.anchors`, `br.video.anchor` | what hangs on which main clip; detach or attach |
 //! | `br.video.detachAudio` | separate picture and sound of the selected clips |
 //! | `br.video.text` | a title at the playhead |
 //! | `br.video.captions` | captions from an SRT/VTT/… file |
@@ -24,6 +34,10 @@ use serde_json::{Value, json};
 
 pub use filmcraft_engine::Session;
 
+pub mod anchors;
+pub mod magnet;
+pub mod main_track;
+pub mod reconcile;
 pub mod speech;
 
 /// A video's shape.
@@ -145,15 +159,55 @@ pub const COMMANDS: &[CommandInfo] = &[
     },
     CommandInfo {
         id: "br.video.add",
-        params: r#"{"paths":[str],"at":"end|playhead"="end"}"#,
-        summary: "Import files and put them one after another on the main track (at its end or the playhead)",
+        params: r#"{"paths":[str],"at":"end|playhead"|seconds="end"}"#,
+        summary: "Import files and put them one after another on the main track: at its end, or at the cut nearest to the playhead (or `at` seconds); nothing is cut in two",
     },
-    CommandInfo { id: "br.video.split", params: r#"{"seconds":f64?}"#, summary: "Cut every clip under the playhead (or at `seconds`)" },
-    CommandInfo { id: "br.video.delete", params: r#"{"clips":[id]?}"#, summary: "Delete the selected clips and close the gap" },
+    CommandInfo {
+        id: "br.video.split",
+        params: r#"{"clip":id?,"seconds":f64?}"#,
+        summary: "Cut a clip (the selected one, else the main clip) at the playhead (or `seconds`); titles and music stay whole",
+    },
+    CommandInfo {
+        id: "br.video.delete",
+        params: r#"{"clips":[id]?}"#,
+        summary: "Delete the selected clips; the main track closes up (magnet) and what hangs on a deleted main clip goes too",
+    },
     CommandInfo {
         id: "br.video.speed",
         params: r#"{"speed":f64,"clips":[id]?}"#,
-        summary: "Speed factor of the selected clips (2 = twice as fast), the gap follows",
+        summary: "Speed factor of the selected clips (2 = twice as fast); the main track moves up or on, attached clips follow",
+    },
+    CommandInfo {
+        id: "br.video.move",
+        params: r#"{"clip":id,"index":n?,"seconds":f64?,"track":"main|overlay|V2|A3|…"|id?}"#,
+        summary: "Move a clip: to place `index` of the main track (or the cut nearest `seconds`), off it onto an overlay track, or any clip to `seconds` on a track",
+    },
+    CommandInfo {
+        id: "br.video.trim",
+        params: r#"{"clip":id,"edge":"in|out","seconds":f64|"frames":n}"#,
+        summary: "Move a clip's edge (+ later, − earlier); a main clip ripples with the magnet on, its attached clips follow",
+    },
+    CommandInfo {
+        id: "br.video.duplicate",
+        params: r#"{"clips":[id]?}"#,
+        summary: "Duplicate clips: a main clip's copy comes right after it (the rest moves on), any other clip's right after it on a free track",
+    },
+    CommandInfo { id: "br.video.pack", params: "{}", summary: "Close the gaps of the main track; attached clips go along" },
+    CommandInfo {
+        id: "br.video.magnet",
+        params: r#"{"on":bool}"#,
+        summary: "The magnetic main track (CapCut): no gaps, deleting closes up, inserting pushes on. Turning it on closes the gaps",
+    },
+    CommandInfo {
+        id: "br.video.linkage",
+        params: r#"{"on":bool}"#,
+        summary: "Titles, overlays, sound effects and captions follow the main clip they start on (off: FilmCraft's own behaviour)",
+    },
+    CommandInfo { id: "br.video.anchors", params: "{}", summary: "What hangs on which main clip (clip, kind, parent, offset in seconds)" },
+    CommandInfo {
+        id: "br.video.anchor",
+        params: r#"{"clips":[id]?,"to":id|"auto"|null}"#,
+        summary: "Attach clips to a main clip (`to`), detach them (null) or let them follow the clip they start on again (auto)",
     },
     CommandInfo { id: "br.video.detachAudio", params: r#"{"clips":[id]?}"#, summary: "Separate picture and sound of the selected clips" },
     CommandInfo { id: "br.video.text", params: r#"{"text":str,"seconds":f64=3,"at":f64?}"#, summary: "A title at the playhead (or at `at` seconds)" },
@@ -402,74 +456,79 @@ fn chosen_clips(s: &Session, p: &Value) -> Vec<u64> {
 }
 
 /// Put imported items into the active sequence (a new one in the first item's shape when there
-/// is none): one after another at the end (of the picture and the sound, whichever is later) or
-/// inserted at the playhead. Pictures go on V1 with their sound on A1; sound alone on A1.
-fn place_media(s: &mut Session, items: &[u64], at_playhead: bool) -> filmcraft_engine::Result<()> {
+/// is none): one after another at the end of the main track, or inserted at the cut of the main
+/// track nearest to `at` (nothing is cut in two). Pictures go on the main track with their sound;
+/// sound alone on a free sound track.
+fn place_media(s: &mut Session, items: &[u64], at: Option<filmcraft_time::Tick>) -> filmcraft_engine::Result<()> {
     if s.active_sequence().is_none() {
         s.execute("file.newSequence", json!({"name": "Video", "fromItems": items}))?;
+        prepare(s)?;
         return Ok(());
     }
-    let seq = s.execute("sequence.inspect", json!({}))?;
-    let mut time = if at_playhead { playhead(&seq) } else { track_end(main_track(&seq)).max(track_end(tracks(&seq, "audio").next())) };
-    for item in items {
-        let (has_video, _) = s.project.source_streams(filmcraft_project::ItemId(*item));
-        let mut q = json!({"item": item, "time": time, "insert": at_playhead});
-        if has_video {
-            // the picture on V1, its sound on A1 (where the end was measured)
-            q["track"] = json!("V1");
-            q["audioTrack"] = json!("A1");
-        } else {
-            q["audioTrack"] = json!("A1");
-        }
-        let placed = s.execute("timeline.place", q)?;
-        let end = ids(&placed, "clips")
-            .iter()
-            .filter_map(|c| s.active_sequence()?.find_item(filmcraft_project::ClipId(*c)).map(|(_, it)| it.end().0))
-            .max();
-        if let Some(end) = end {
-            time = time.max(end);
-        }
-    }
+    magnet::insert(s, items, at)?;
     Ok(())
 }
 
-/// Delete `chosen` (and the clips linked to them) and close the gap on their tracks only, as
-/// CapCut does: music, titles and captions on other tracks keep their place (FilmCraft refuses a
-/// ripple delete that sync-locked tracks with something in the gap could not follow). What then
-/// runs past the end of the picture is cut at its end.
-fn ripple_delete(s: &mut Session, chosen: &[u64]) -> filmcraft_engine::Result<()> {
-    use filmcraft_project::TrackId;
+/// A video BR has just made: CapCut's magnetic main track and linkage on, so every track but the
+/// main one (and its sound) follows BR's anchors instead of Premiere's sync lock (titles, overlays
+/// and music are moved by their main clip, never cut by an insert). Part of the caller's undo
+/// step. A sequence BR did not make keeps FilmCraft's behaviour until the switches are turned on.
+fn prepare(s: &mut Session) -> filmcraft_engine::Result<()> {
+    if s.active_sequence().is_some_and(main_track::is_marked) {
+        return Ok(());
+    }
+    s.edit_sequence("Video", |q, _, _| {
+        main_track::capcut(q);
+        Ok(())
+    })
+}
+
+/// The clips a command works on: `clips`, else the selection; never a background (it belongs to
+/// its main clip, which is taken instead).
+fn chosen_or_selected(s: &Session, p: &Value) -> Vec<filmcraft_project::ClipId> {
+    let Some(q) = s.active_sequence() else { return Vec::new() };
+    let mut out: Vec<filmcraft_project::ClipId> = Vec::new();
+    for c in chosen_clips(s, p).into_iter().map(filmcraft_project::ClipId) {
+        let c = match q.find_item(c) {
+            Some((_, it)) if main_track::is_background(it) => match main_track::partners(q, c).into_iter().find(|p| magnet::is_main(q, *p)) {
+                Some(m) => m,
+                None => continue,
+            },
+            Some(_) => c,
+            None => continue,
+        };
+        if !out.contains(&c) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The index of a video track above the main track that is free from `t` for `len` (a new one on
+/// top when none is), for a title or an overlay.
+fn overlay_track(s: &mut Session, t: filmcraft_time::Tick, len: filmcraft_time::Tick) -> filmcraft_engine::Result<usize> {
     let q = s.active_sequence().ok_or(filmcraft_engine::EngineError::NoSequence)?;
-    let links: Vec<u64> = q.all_tracks().flat_map(|t| t.items.iter()).filter(|it| chosen.contains(&it.id.0)).filter_map(|it| it.link).collect();
-    let affected: Vec<TrackId> = q
-        .all_tracks()
-        .filter(|t| t.items.iter().any(|it| chosen.contains(&it.id.0) || it.link.is_some_and(|l| links.contains(&l))))
-        .map(|t| t.id)
-        .collect();
-    let held: Vec<TrackId> = q.all_tracks().filter(|t| t.sync_lock && !affected.contains(&t.id)).map(|t| t.id).collect();
-    s.edit_sequence("Löschen", |q, _, _| {
-        for t in q.all_tracks_mut().filter(|t| held.contains(&t.id)) {
-            t.sync_lock = false;
-        }
-        Ok(())
-    })?;
-    let deleted = s.execute("edit.rippleDelete", json!({"clips": chosen}));
-    s.edit_sequence("Löschen", |q, _, _| {
-        for t in q.all_tracks_mut().filter(|t| held.contains(&t.id)) {
-            t.sync_lock = true;
-        }
-        // nothing outlasts the picture (music would play over black)
-        let end = q.video_tracks.first().and_then(|t| t.items.iter().map(|it| it.end()).max());
-        if let Some(end) = end.filter(|e| e.0 > 0) {
-            for t in q.all_tracks_mut().filter(|t| !affected.contains(&t.id)) {
-                for it in t.items.iter_mut().filter(|it| it.start < end && it.end() > end) {
-                    it.duration = end - it.start;
-                }
-            }
-        }
-        Ok(())
-    })?;
-    deleted.map(|_| ())
+    let main = main_track::main_track_id(q);
+    let from = q.video_tracks.iter().position(|tr| Some(tr.id) == main).map_or(0, |i| i + 1);
+    let range = filmcraft_time::TimeRange::new(t, len);
+    let free = q
+        .video_tracks
+        .iter()
+        .enumerate()
+        .skip(from)
+        .find(|(_, tr)| !tr.locked && !main_track::is_background_track(tr) && tr.items.iter().all(|i| !i.range().overlaps(&range)))
+        .map(|(i, _)| i);
+    if let Some(i) = free {
+        return Ok(i);
+    }
+    s.execute("sequence.addTracks", json!({"video": 1, "audio": 0}))?;
+    let n = s.active_sequence().map(|q| q.video_tracks.len()).unwrap_or(1);
+    Ok(n - 1)
+}
+
+/// Seconds as ticks.
+fn ticks(sec: f64) -> filmcraft_time::Tick {
+    filmcraft_time::Tick((sec * filmcraft_time::TICKS_PER_SECOND as f64).round() as i64)
 }
 
 /// The video clips of the active sequence that show media (not titles or graphics).
@@ -548,11 +607,45 @@ fn playhead(seq: &Value) -> i64 {
 }
 
 /// Run one of BR's video commands, or any of FilmCraft's (`timeline.razor`, `lumetri.setLook`, …).
+/// For a session that is also edited otherwise (a window), use [`execute_with`] and its watch.
 pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
+    let mut w = reconcile::Watch::new(s);
+    execute_with(s, &mut w, id, p)
+}
+
+/// [`execute`] for a session with a [`reconcile::Watch`]: edits made since with FilmCraft's own
+/// tools are followed first (see [`reconcile`]), a FilmCraft command's edit is followed in its
+/// step, and BR's own steps are never taken for FilmCraft's.
+pub fn execute_with(s: &mut Session, w: &mut reconcile::Watch, id: &str, p: &Value) -> Result<Value, String> {
     let p = if p.is_null() { &json!({}) } else { p };
+    reconcile::catch_up(s, w);
     if !is_video(id) {
-        return run(s, id, p.clone());
+        // FilmCraft's own command: what hangs on the main clips it changed follows, in its step
+        let r = run(s, id, p.clone());
+        reconcile::catch_up(s, w);
+        return r;
     }
+    // a dynamic trim running in FilmCraft ends first, as its own step (not inside BR's)
+    if s.trim_play.dynamic.is_some() {
+        let _ = s.execute("trim.shuttleStop", json!({}));
+        reconcile::catch_up(s, w);
+    }
+    let before = s.project.clone();
+    let tracks = reconcile::track_ids(s);
+    let r = execute_br(s, id, p);
+    if r.is_ok() {
+        reconcile::unlock_new_tracks(s, &tracks);
+    }
+    // BR edits outside FilmCraft's execute: playback and autosave hear of them here
+    if !std::sync::Arc::ptr_eq(&before, &s.project) {
+        s.sync_persistence();
+        s.previews.live.publish_project(s.project.clone());
+    }
+    w.look(s);
+    r
+}
+
+fn execute_br(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
     match id {
         "br.video.new" => {
             let key = p.get("format").and_then(Value::as_str).unwrap_or("16:9");
@@ -563,7 +656,11 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
             }
             let name = p.get("name").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("Video {}", format.key()));
             let (w, h) = format.size();
-            run(s, "file.newSequence", json!({"name": name, "width": w, "height": h, "fps": fps}))?;
+            s.edit_group("Neues Video", |s| {
+                s.execute("file.newSequence", json!({"name": name, "width": w, "height": h, "fps": fps}))?;
+                prepare(s)
+            })
+            .map_err(|e| e.to_string())?;
             state(s)
         }
         "br.video.add" => {
@@ -575,10 +672,12 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
             if paths.is_empty() {
                 return Err(err(id, "needs `paths`"));
             }
-            let at_playhead = match p.get("at").and_then(Value::as_str) {
-                None | Some("end") => false,
-                Some("playhead") => true,
-                Some(other) => return Err(err(id, format!("`at` is end or playhead, not `{other}`"))),
+            let at = match p.get("at") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(w)) if w == "end" => None,
+                Some(Value::String(w)) if w == "playhead" => Some(s.playhead()),
+                Some(v) if v.as_f64().is_some_and(|x| x.is_finite() && x >= 0.0) => v.as_f64().map(ticks),
+                Some(other) => return Err(err(id, format!("`at` is end, playhead or seconds, not `{other}`"))),
             };
             let errors = s
                 .edit_group("Medien hinzufügen", |s| {
@@ -600,7 +699,7 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
                     // clips of another shape fit into the frame, as in CapCut (FilmCraft's own
                     // default places them at 100 %); the preference is the user's again afterwards
                     let saved = std::mem::replace(&mut s.prefs.media.default_media_scaling, "setToFrameSize".into());
-                    let placed = place_media(s, &items, at_playhead);
+                    let placed = place_media(s, &items, at);
                     s.prefs.media.default_media_scaling = saved;
                     placed?;
                     Ok(imported.get("errors").cloned().unwrap_or(json!([])))
@@ -614,43 +713,194 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
             Ok(st)
         }
         "br.video.split" => {
-            let mut q = json!({});
-            if let Some(sec) = opt_f64(id, p, "seconds")? {
-                q["time"] = json!((sec * filmcraft_time::TICKS_PER_SECOND as f64).round() as i64);
-            }
-            run(s, "sequence.addEdit", q)
+            let q = s.active_sequence().ok_or_else(|| err(id, "noch kein Video"))?;
+            let t = opt_f64(id, p, "seconds")?.map(ticks).unwrap_or_else(|| s.playhead());
+            // the chosen clip, else the selected one under the cut, else the main clip there:
+            // never every track (titles and music stay whole)
+            let under = |c: &filmcraft_project::ClipId| q.find_item(*c).is_some_and(|(_, it)| it.start < t && t < it.end());
+            let clip = match p.get("clip").and_then(Value::as_u64) {
+                Some(c) => Some(filmcraft_project::ClipId(c)),
+                None => chosen_or_selected(s, &json!({})).into_iter().find(under).or_else(|| magnet::main_clip_at(q, t).filter(under)),
+            };
+            let clip = clip.ok_or_else(|| err(id, "hier liegt kein Clip, der sich teilen ließe"))?;
+            magnet::split(s, clip, t).map_err(|e| err(id, e))?;
+            state(s)
         }
         "br.video.delete" => {
-            let chosen = chosen_clips(s, p);
+            let chosen = chosen_or_selected(s, p);
             if chosen.is_empty() {
                 return Err(err(id, "erst die Clips auswählen, die weg sollen"));
             }
-            s.edit_group("Löschen", |s| ripple_delete(s, &chosen)).map_err(|e| e.to_string())?;
-            state(s)
+            let r = magnet::delete(s, &chosen).map_err(|e| err(id, e))?;
+            let mut st = state(s)?;
+            st["deleted"] = r["deleted"].clone();
+            st["followed"] = r["followed"].clone();
+            Ok(st)
         }
         "br.video.speed" => {
             let speed = opt_f64(id, p, "speed")?.ok_or_else(|| err(id, "needs `speed`"))?;
             if !(0.01..=100.0).contains(&speed) {
                 return Err(err(id, "`speed` must be between 0.01 and 100"));
             }
-            let chosen = chosen_clips(s, p);
+            let chosen = chosen_or_selected(s, p);
             if chosen.is_empty() {
                 return Err(err(id, "erst die Clips auswählen, deren Tempo sich ändern soll"));
             }
-            // a reversed clip stays reversed (FilmCraft's command sets the direction too)
+            magnet::speed(s, &chosen, speed).map_err(|e| err(id, e))?;
+            state(s)
+        }
+        "br.video.move" => {
+            let clip = p.get("clip").and_then(Value::as_u64).map(filmcraft_project::ClipId).ok_or_else(|| err(id, "needs `clip`"))?;
             let q = s.active_sequence().ok_or_else(|| err(id, "noch kein Video"))?;
-            let (backward, forward): (Vec<u64>, Vec<u64>) =
-                chosen.iter().partition(|c| q.find_item(filmcraft_project::ClipId(**c)).is_some_and(|(_, it)| it.reverse));
-            s.edit_group(&format!("Tempo {speed}×"), |s| {
-                for (clips, reverse) in [(forward, false), (backward, true)] {
-                    if !clips.is_empty() {
-                        s.execute("clip.speedDuration", json!({"clips": clips, "speed": speed * 100.0, "ripple": true, "reverse": reverse}))?;
+            let (own, start) = q.find_item(clip).map(|(t, it)| (t, it.start)).ok_or_else(|| err(id, format!("no clip {}", clip.0)))?;
+            let main = main_track::main_track_id(q);
+            let index = p.get("index").and_then(Value::as_u64).map(|i| i as usize);
+            let at = opt_f64(id, p, "seconds")?.map(|x| ticks(x.max(0.0)));
+            // the track asked for: None = the main track, Some(None) = a free overlay track
+            let track: Option<Option<filmcraft_project::TrackId>> = match p.get("track") {
+                None | Some(Value::Null) if index.is_some() => None,
+                None | Some(Value::Null) => {
+                    if Some(own) == main {
+                        None
+                    } else {
+                        Some(Some(own))
                     }
+                }
+                Some(Value::String(t)) if t == "main" => None,
+                Some(Value::String(t)) if t == "overlay" || t == "new" => Some(None),
+                Some(Value::String(t)) => {
+                    let n = t.get(1..).and_then(|n| n.parse::<usize>().ok()).filter(|n| *n > 0);
+                    let list = match t.chars().next() {
+                        Some('V') => &q.video_tracks,
+                        Some('A') => &q.audio_tracks,
+                        _ => return Err(err(id, format!("`track` is main, overlay, V2, A3, … or a track id, not `{t}`"))),
+                    };
+                    let tid = n.and_then(|n| list.get(n - 1)).map(|t| t.id).ok_or_else(|| err(id, format!("no track {t}")))?;
+                    if Some(tid) == main { None } else { Some(Some(tid)) }
+                }
+                Some(v) => {
+                    let tid = filmcraft_project::TrackId(v.as_u64().ok_or_else(|| err(id, "`track` is main, overlay, V2, A3, … or a track id"))?);
+                    if Some(tid) == main { None } else { Some(Some(tid)) }
+                }
+            };
+            let to = match (track, index, at) {
+                (None, Some(i), _) => magnet::To::Index(i),
+                (None, None, Some(t)) => magnet::To::Main(t),
+                (None, None, None) => return Err(err(id, "needs `index` or `seconds`: where on the main track")),
+                (Some(t), _, at) => magnet::To::Track(t, at.unwrap_or(start)),
+            };
+            let r = magnet::move_clip(s, clip, to).map_err(|e| err(id, e))?;
+            let mut st = state(s)?;
+            st["followed"] = r;
+            Ok(st)
+        }
+        "br.video.trim" => {
+            let clip = p.get("clip").and_then(Value::as_u64).map(filmcraft_project::ClipId).ok_or_else(|| err(id, "needs `clip`"))?;
+            let edge = match p.get("edge").and_then(Value::as_str) {
+                Some("in" | "start") => filmcraft_edit::Edge::In,
+                Some("out" | "end") => filmcraft_edit::Edge::Out,
+                _ => return Err(err(id, "`edge` is in or out")),
+            };
+            let q = s.active_sequence().ok_or_else(|| err(id, "noch kein Video"))?;
+            let delta = match (opt_f64(id, p, "seconds")?, p.get("frames").and_then(Value::as_i64)) {
+                (Some(x), _) => ticks(x),
+                (None, Some(f)) => filmcraft_time::Tick(q.settings.frame_rate.frame_duration().0 * f),
+                _ => return Err(err(id, "needs `seconds` (or `frames`): how far the edge moves, + later, − earlier")),
+            };
+            let r = magnet::trim(s, clip, edge, delta).map_err(|e| err(id, e))?;
+            let mut st = state(s)?;
+            st["trimmed"] = r;
+            Ok(st)
+        }
+        "br.video.duplicate" => {
+            let chosen = chosen_or_selected(s, p);
+            if chosen.is_empty() {
+                return Err(err(id, "erst die Clips auswählen, die doppelt sein sollen"));
+            }
+            let r = magnet::duplicate(s, &chosen).map_err(|e| err(id, e))?;
+            let mut st = state(s)?;
+            st["copies"] = r["copies"].clone();
+            Ok(st)
+        }
+        "br.video.pack" => {
+            if s.active_sequence().is_none() {
+                return Err(err(id, "noch kein Video"));
+            }
+            magnet::pack(s).map_err(|e| err(id, e))?;
+            state(s)
+        }
+        "br.video.magnet" | "br.video.linkage" => {
+            let on = p.get("on").and_then(Value::as_bool).ok_or_else(|| err(id, "needs `on` (true or false)"))?;
+            if s.active_sequence().is_none() {
+                return Err(err(id, "noch kein Video"));
+            }
+            let key = if id == "br.video.magnet" { "magnet" } else { "linkage" };
+            let label = match (key, on) {
+                ("magnet", true) => "Magnet an",
+                ("magnet", false) => "Magnet aus",
+                (_, true) => "Verknüpfung an",
+                _ => "Verknüpfung aus",
+            };
+            s.edit_group(label, |s| {
+                s.edit_sequence(label, |q, _, _| {
+                    main_track::set_flag(q, key, on);
+                    Ok(())
+                })?;
+                // the magnet closes the main track's gaps when it comes on, as in CapCut
+                if key == "magnet" && on {
+                    magnet::pack(s)?;
                 }
                 Ok(())
             })
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| err(id, e))?;
             state(s)
+        }
+        "br.video.anchors" => {
+            let q = s.active_sequence().ok_or_else(|| err(id, "noch kein Video"))?;
+            let list: Vec<Value> = anchors::derive(q)
+                .iter()
+                .map(|a| {
+                    let kind = match a.kind {
+                        anchors::Kind::Overlay => "overlay",
+                        anchors::Kind::Sound => "sound",
+                        anchors::Kind::Caption => "caption",
+                    };
+                    json!({
+                        "clip": a.child.0,
+                        "kind": kind,
+                        "parent": a.parent_clip().map(|c| c.0),
+                        "end": a.parent == anchors::Parent::End,
+                        "offset": seconds((a.start - a.parent_start).0),
+                    })
+                })
+                .collect();
+            let st = main_track::settings(q);
+            Ok(json!({"magnet": st.magnet, "linkage": st.linkage, "anchors": list}))
+        }
+        "br.video.anchor" => {
+            let chosen = chosen_clips(s, p);
+            if chosen.is_empty() {
+                return Err(err(id, "needs `clips` (or a selection)"));
+            }
+            let to = match p.get("to") {
+                Some(Value::String(a)) if a == "auto" => None,
+                None | Some(Value::Null) => Some(None),
+                Some(v) => Some(Some(filmcraft_project::ClipId(v.as_u64().ok_or_else(|| err(id, "`to` is a main clip id, auto or null"))?))),
+            };
+            if let Some(Some(parent)) = to
+                && !s.active_sequence().is_some_and(|q| magnet::is_main(q, parent))
+            {
+                return Err(err(id, format!("{} is no clip of the main track", parent.0)));
+            }
+            let label = match to {
+                None => "Automatisch anhängen",
+                Some(None) => "Lösen",
+                Some(Some(_)) => "Anhängen",
+            };
+            let n = s
+                .edit_sequence(label, |q, _, _| Ok(chosen.iter().filter(|c| anchors::set_exception(q, filmcraft_project::ClipId(**c), to)).count()))
+                .map_err(|e| err(id, e))?;
+            Ok(json!({"changed": n}))
         }
         "br.video.detachAudio" => {
             // only ever unlinks (FilmCraft's clip.link toggles, and links unlinked clips)
@@ -686,11 +936,21 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
             if !(0.04..=3600.0).contains(&secs) {
                 return Err(err(id, "`seconds` must be between 0.04 and 3600"));
             }
-            let mut q = json!({"text": text, "seconds": secs, "newClip": true});
-            if let Some(at) = opt_f64(id, p, "at")? {
-                q["time"] = json!((at * filmcraft_time::TICKS_PER_SECOND as f64).round() as i64);
+            if s.active_sequence().is_none() {
+                return Err(err(id, "noch kein Video"));
             }
-            run(s, "graphics.newText", q)
+            let t = opt_f64(id, p, "at")?.map(|x| ticks(x.max(0.0))).unwrap_or_else(|| s.playhead());
+            s.edit_group("Text", |s| {
+                // on an overlay track that is free there (FilmCraft would take the main track
+                // where nothing else is, e.g. after the end), centred in the picture
+                let track = overlay_track(s, t, ticks(secs))?;
+                let r = s.execute("graphics.newText", json!({"text": text, "seconds": secs, "newClip": true, "time": t.0, "track": track}))?;
+                if let Some(clip) = r.get("clip").and_then(Value::as_u64) {
+                    s.execute("graphics.set", json!({"clip": clip, "layer": 0, "props": {"align": "center"}}))?;
+                }
+                Ok(r)
+            })
+            .map_err(|e| err(id, e))
         }
         "br.video.captions" => {
             let path = str_param(id, p, "path")?.to_string();
@@ -892,13 +1152,24 @@ pub fn execute(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
                 .get("burnCaptions")
                 .and_then(Value::as_bool)
                 .unwrap_or_else(|| s.active_sequence().is_some_and(|q| q.caption_tracks.iter().any(|t| t.enabled && !t.captions.is_empty())));
-            // the whole video, whatever In and Out marks are set
+            // the whole video, whatever In and Out marks are set, up to the end of its picture
+            // (music that runs on is not played over black)
+            let (end, all) = s.active_sequence().map(|q| (magnet::picture_end(q), q.duration())).unwrap_or_default();
             let range = p.get("range").cloned().unwrap_or(json!("entire"));
+            let (range, from, to) = if p.get("range").is_none() && end.0 > 0 && end < all {
+                (json!("custom"), Some(0.0), Some(seconds(end.0)))
+            } else {
+                (range, None, None)
+            };
             let Some(part_str) = part.to_str() else {
                 return Err(err(id, format!("{}: der Ordnername ist kein gültiger Text (UTF-8)", path.display())));
             };
-            let mut r =
-                run(s, "export.quick", json!({"preset": preset.filmcraft, "path": part_str, "wait": wait, "burnCaptions": burn, "range": range}))?;
+            let mut q = json!({"preset": preset.filmcraft, "path": part_str, "wait": wait, "burnCaptions": burn, "range": range});
+            if let (Some(a), Some(b)) = (from, to) {
+                q["startSeconds"] = json!(a);
+                q["endSeconds"] = json!(b);
+            }
+            let mut r = run(s, "export.quick", q)?;
             r["path"] = json!(path.to_string_lossy());
             r["part"] = json!(part_str);
             let job = r.get("job").and_then(Value::as_u64).unwrap_or(0);
@@ -945,7 +1216,9 @@ pub fn state(s: &mut Session) -> Result<Value, String> {
     let (w, h) = (size("width"), size("height"));
     let video: usize = tracks(&seq, "video").map(|t| items(t).count()).sum();
     let audio: usize = tracks(&seq, "audio").map(|t| items(t).count()).sum();
-    let end = seq.get("duration").and_then(Value::as_i64).unwrap_or(0);
+    // the video's length: its picture's (what an export holds), else everything's
+    let end =
+        s.active_sequence().map(|q| magnet::picture_end(q).0).filter(|e| *e > 0).or_else(|| seq.get("duration").and_then(Value::as_i64)).unwrap_or(0);
     Ok(json!({
         "name": seq.get("name"),
         "format": Format::of_size(w, h).map(Format::key),

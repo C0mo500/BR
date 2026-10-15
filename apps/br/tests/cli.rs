@@ -325,3 +325,46 @@ fn commands_lists_photo_video_and_filmcrafts() {
     let text = String::from_utf8_lossy(&o.stdout);
     assert!(text.contains("film.timeline.place") && text.contains("film.export.quick"), "{text}");
 }
+
+#[test]
+fn run_reads_a_script_and_br_film_runs_filmcraft_s_commands() {
+    if !have_ffmpeg() {
+        eprintln!("ffmpeg missing: skipped");
+        return;
+    }
+    let dir = temp("script");
+    let clip = dir.join("a.mp4");
+    phone_clip(&clip, 3);
+    let script = dir.join("schnitt.jsonl");
+    std::fs::write(
+        &script,
+        "# zwei Schritte\n{\"command\": \"br.video.split\", \"params\": {\"seconds\": 1}}\n\n{\"command\": \"br.video.anchors\"}\n",
+    )
+    .unwrap();
+    let o = br().arg("run").arg("--import").arg(&clip).arg("--script").arg(&script).arg("br.video.state").output().unwrap();
+    assert!(o.status.success(), "{}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    let l = lines(&o.stdout);
+    let ids: Vec<&str> = l.iter().filter_map(|x| x["command"].as_str()).collect();
+    assert_eq!(ids, vec!["br.video.state", "br.video.split", "br.video.anchors"], "command line first, then the script: {l:?}");
+    assert_eq!(l[2]["result"]["magnet"], true, "{}", l[2]);
+
+    // from standard input
+    let mut child = br().args(["run", "--script", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(b"{\"command\": \"br.video.new\", \"params\": {\"format\": \"1:1\"}}\n").unwrap();
+    let o = child.wait_with_output().unwrap();
+    assert!(o.status.success());
+    assert_eq!(lines(&o.stdout)[0]["result"]["format"], "1:1");
+
+    // a broken line names its place
+    std::fs::write(&script, "{\"command\": \"br.video.state\"}\nkein json\n").unwrap();
+    let o = br().arg("run").arg("--script").arg(&script).output().unwrap();
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("schnitt.jsonl:2"), "{}", String::from_utf8_lossy(&o.stderr));
+
+    // br film: FilmCraft's ids without the prefix
+    let o = br().arg("film").arg("--import").arg(&clip).args(["sequence.inspect", "timeline.razor", "time=0"]).output().unwrap();
+    let l = lines(&o.stdout);
+    assert_eq!(l[0]["command"], "film.sequence.inspect", "{l:?}");
+    assert!(l[0]["result"]["video"].is_array(), "{l:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

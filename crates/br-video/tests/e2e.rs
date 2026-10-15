@@ -431,7 +431,7 @@ fn mixed_media_music_and_titles_then_cuts_still_work() {
     let undo = s.history.undo.len();
     let st = ok(&mut s, "br.video.add", json!({"paths": [wide.to_string_lossy(), voice.to_string_lossy()]}));
     assert_eq!(s.history.undo.len(), undo + 1);
-    assert!((st["seconds"].as_f64().unwrap() - 7.0).abs() < 0.2, "3 s + 2 s picture, then 2 s of sound: {st}");
+    assert!((st["seconds"].as_f64().unwrap() - 5.0).abs() < 0.2, "3 s + 2 s picture, the sound alone at the playhead: {st}");
     let q = s.active_sequence().unwrap();
     let wide_clip = q.video_tracks[0].items[1].id.0;
     assert!((clip_scale(&s, wide_clip) - 56.3).abs() < 0.2, "16:9 fits into 9:16: {}", clip_scale(&s, wide_clip));
@@ -439,20 +439,37 @@ fn mixed_media_music_and_titles_then_cuts_still_work() {
 
     ok(&mut s, "br.video.music", json!({"path": m.to_string_lossy()}));
     ok(&mut s, "br.video.text", json!({"text": "Titel", "at": 0.0, "seconds": 6.0}));
-    // delete the first clip: the picture closes up, music and title stay, nothing runs past the end
+    // delete the first clip: the picture closes up; the title over the whole video (it started on
+    // that clip but runs far past it) and the music stay
     let first = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
     let undo = s.history.undo.len();
     let st = ok(&mut s, "br.video.delete", json!({"clips": [first]}));
     assert_eq!(s.history.undo.len(), undo + 1, "one undo step");
     let q = s.active_sequence().unwrap();
     let picture_end = q.video_tracks[0].items.iter().map(|i| i.end()).max().unwrap();
+    let music = q
+        .audio_tracks
+        .iter()
+        .flat_map(|t| t.items.iter())
+        .find(|it| it.essential.as_ref().is_some_and(|e| e.kind == filmcraft_project::AudioType::Music));
+    assert!(music.is_some_and(|m| m.end() > picture_end), "the music stays whole (the export ends with the picture)");
+    assert!(q.video_tracks.iter().flat_map(|t| t.items.iter()).any(|it| it.name.contains("Titel")), "the long title stays");
+    // the main track and its sound keep Premiere's sync lock; titles and music follow BR's anchors
+    let main = br_video::main_track::main_track_id(q).unwrap();
+    let main_audio = br_video::main_track::main_audio_track(q).unwrap();
     for t in q.all_tracks() {
-        for it in &t.items {
-            assert!(it.end() <= picture_end || it.start >= picture_end, "{} runs past the picture", it.name);
-        }
+        assert_eq!(t.sync_lock, t.id == main || t.id == main_audio, "sync lock of {}", t.name);
     }
-    assert!(q.all_tracks().all(|t| t.sync_lock || t.items.is_empty()), "sync lock restored");
-    assert!((st["seconds"].as_f64().unwrap() - 4.0).abs() < 0.2, "{st}");
+    // the sound that started on the first clip went with it; the video lasts as long as the
+    // title still runs
+    let sounds = q
+        .audio_tracks
+        .iter()
+        .flat_map(|t| t.items.iter())
+        .filter(|it| it.essential.as_ref().is_some_and(|e| e.kind == filmcraft_project::AudioType::Sfx))
+        .count();
+    assert_eq!(sounds, 0, "the short sound went with its clip");
+    assert!((st["seconds"].as_f64().unwrap() - 6.0).abs() < 0.2, "{st}");
 
     // speed keeps a reversed clip reversed
     let clip = s.active_sequence().unwrap().video_tracks[0].items[0].id.0;
@@ -469,14 +486,14 @@ fn mixed_media_music_and_titles_then_cuts_still_work() {
 
     // In and Out marks don't shorten the export
     let whole = ok(&mut s, "br.video.state", json!({}))["seconds"].as_f64().unwrap();
-    s.execute("playhead.set", json!({"seconds": 1.0})).unwrap();
+    s.execute("playhead.set", json!({"seconds": 0.2})).unwrap();
     s.execute("markers.markIn", json!({})).unwrap();
-    s.execute("playhead.set", json!({"seconds": 2.0})).unwrap();
+    s.execute("playhead.set", json!({"seconds": 0.6})).unwrap();
     s.execute("markers.markOut", json!({})).unwrap();
     let out = d.join("all.mp4");
     ok(&mut s, "br.video.export", json!({"preset": "video", "path": out.to_string_lossy()}));
     let dur: f64 = probe(&out)["format"]["duration"].as_str().unwrap().parse().unwrap();
-    assert!((dur - whole).abs() < 0.15 && whole > 2.5, "the whole video ({whole} s), not the marked second: {dur}");
+    assert!((dur - whole).abs() < 0.15 && whole > 0.8, "the whole video ({whole} s), not the marked 0.4 s: {dur}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
