@@ -7,7 +7,9 @@ des Servers, eine Grafikkarte ist nicht nötig.
 
 ```
 Browser ──HTTPS + Login──▶ Reverse-Proxy (Caddy / nginx)
-                             ├─ /         ▶ 127.0.0.1:6081  br-dateien  (Seite, Upload, Exporte)
+                             ├─ /         ▶ 127.0.0.1:6081  br-dateien  (Seite, Upload, Exporte, Ton)
+                             │                 ├─ /api/ton      ◀─ ton.sock ◀─ BR (Wiedergabe)
+                             │                 └─ /api/ablegen  ─▶ Steuerkanal ─▶ BR (br.drop)
                              └─ /novnc/*  ▶ 127.0.0.1:6080  websockify  ─▶ Xvnc :7 ─▶ openbox + BR
 ```
 
@@ -77,6 +79,9 @@ Wichtig in jedem Proxy (auch Apache, Traefik …):
    vollständig geschrieben ist.
 
 Der Bildschirm passt sich der Größe des Browserfensters an; **⛶** schaltet auf Vollbild.
+**Strg+K** öffnet in BR die Befehlssuche (jeder Befehl von BR, FilmCraft und LightCraft, deutsch
+oder englisch, mit seiner Taste); **Strg+Alt+1 … 6** wechselt die Seiten. Manche Browser behalten
+Strg+K für sich: dann über **⛶** ins Vollbild, dort gehen die Tasten an BR.
 Hochgeladenes bleibt auf dem Server: BR bearbeitet es, ohne das Original zu verändern.
 
 ### Claude im selben Fenster
@@ -112,10 +117,14 @@ Entfernen: `systemctl disable --now br-web br-dateien`, dann
 
 - **Eine Person zur Zeit.** Es gibt einen Bildschirm: öffnen zwei Browser die Seite, sehen beide
   dasselbe und bedienen es gemeinsam.
-- **Dateien direkt ins BR-Fenster ziehen** geht über VNC nicht; die Seite fängt sie ab und lädt
-  sie hoch.
-- **Ton:** VNC überträgt keinen Ton; Videos spielen im Browser stumm. Pegel zeigt die Ton-Seite,
-  und der Export hat den vollen Ton.
+- **Dateien auf das BR-Bild ziehen:** VNC kennt kein Ziehen von Dateien; die Seite fängt sie ab,
+  lädt sie hoch und lässt BR sie dort ablegen, wo sie losgelassen wurden (über den Steuerkanal,
+  `BR_CONTROL=1`): auf dem Startbildschirm als neues Video, auf der Timeline an der Schnittstelle
+  dort, über der Hauptspur als Overlay, auf dem Programm-Monitor an der Stelle im Bild, auf
+  **Foto** in die Bibliothek. Auf den Rest der Seite gezogen, landen sie nur im Upload-Ordner.
+- **Ton:** **🔇 Ton** oben auf der Seite einschalten (ein Klick ist nötig, Browser spielen sonst
+  nichts ab). BR spielt die Wiedergabe dann in die Seite: 16 Bit, 48 kHz, Stereo, rund 0,1 s
+  verzögert, wie das Bild über VNC. VNC selbst überträgt keinen Ton. Ohne Ton: `BR_TON=0`.
 - **Automatische Untertitel** laden beim ersten Mal ein Sprachmodell (etwa 150 MB) von
   Hugging Face; der Server braucht dafür Internet. Die Erkennung selbst läuft auf dem Server.
 - **Tempo:** Vorschau und Export rechnet die CPU. Eine Grafikkarte im Server (Vulkan) nutzt BR

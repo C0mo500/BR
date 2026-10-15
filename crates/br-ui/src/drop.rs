@@ -235,6 +235,10 @@ pub fn os_files(app: &mut BrApp, ctx: &egui::Context, paths: Vec<String>, at: Po
 /// Where the pointer is while files are dragged in from the file manager: the OS's pointer when
 /// the platform can say (X11), else the last one egui saw.
 pub fn os_pointer(app: &BrApp, ctx: &egui::Context) -> Option<Pos2> {
+    // dropped on the browser page over BR: where the page says
+    if let Some(at) = app.drop_at {
+        return Some(at);
+    }
     let screen = app.cursor.and_then(|f| f()).and_then(|(x, y)| {
         ctx.input(|i| i.viewport().inner_rect.map(|r| egui::pos2(x as f32 / i.pixels_per_point - r.min.x, y as f32 / i.pixels_per_point - r.min.y)))
     });

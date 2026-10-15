@@ -20,11 +20,14 @@ pub mod desktop;
 pub mod drop;
 pub mod headless;
 pub mod inspector;
+pub mod keys;
 pub mod monitor;
+pub mod palette;
 pub mod photo;
 mod style;
 pub mod timeline;
 pub mod video;
+pub mod widgets;
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -127,6 +130,8 @@ pub struct BrApp {
     pub assets: assets::AssetState,
     /// The Program monitor's selection behaviour.
     pub monitor: monitor::MonitorState,
+    /// The command search (Strg+K).
+    pub palette: palette::PaletteState,
     /// Every font family the apps draw with was bound at the start of this frame.
     fonts_ok: bool,
     /// Screen rectangles of BR's controls from the last frame, by name (`page.foto`,
@@ -143,6 +148,24 @@ pub struct BrApp {
     /// The pointer on the screen in physical pixels, where the platform can say during a drag
     /// from the file manager (X11; winit reports nothing then).
     pub cursor: Option<fn() -> Option<(i32, i32)>>,
+    /// Files dropped where the window cannot see the drop itself (the browser page over VNC,
+    /// `br.drop`): handed in with the next frame's input, at this place in the window.
+    pub(crate) pending_drop: Option<(Vec<String>, Option<egui::Pos2>)>,
+    /// Where such a drop landed, while the frame that has it is handled.
+    pub(crate) drop_at: Option<egui::Pos2>,
+}
+
+/// A file dropped on the window, by its path (`br.drop`, the headless driver).
+#[derive(Debug)]
+pub(crate) struct PathFile(pub std::path::PathBuf);
+
+impl egui::DroppedFile for PathFile {
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
 }
 
 /// The services every BR window has: writing files and PNG screenshots. A desktop window adds
@@ -207,7 +230,10 @@ impl BrApp {
             inspector: inspector::InspectorState::default(),
             assets: assets::AssetState::default(),
             monitor: monitor::MonitorState::default(),
+            palette: palette::PaletteState::default(),
             cursor: None,
+            pending_drop: None,
+            drop_at: None,
             fonts_ok: false,
             widgets: HashMap::new(),
             library,
@@ -255,6 +281,8 @@ impl BrApp {
     /// Per frame, before `ui`: both apps' background work (renders, imports, saving, control
     /// requests). Only the app on the page sees keyboard shortcuts.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        // BR's keys before the apps see them (Strg+K, the pages, BR's commands)
+        keys::handle(self, ctx);
         if self.page == Page::Foto {
             self.lc.logic(ctx);
         } else {
@@ -291,6 +319,17 @@ impl BrApp {
     /// Before each frame: input the apps' control channels inject, and files dropped where BR
     /// takes them itself.
     pub fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // files dropped on the browser page over BR (br.drop): as if dropped on the window
+        self.drop_at = None;
+        if let Some((paths, at)) = self.pending_drop.take() {
+            for p in paths {
+                raw.dropped_files.push(std::sync::Arc::new(PathFile(p.into())));
+            }
+            if let Some(at) = at {
+                raw.events.push(egui::Event::PointerMoved(at));
+            }
+            self.drop_at = at;
+        }
         self.lc.raw_input_hook(raw);
         video::raw_input_hook(&mut self.fc, ctx, raw);
         self.route_drops(ctx, raw);
@@ -344,6 +383,7 @@ impl BrApp {
             Page::Foto => {
                 self.lc.ui(ui);
                 photo::show(self, &ctx);
+                palette::show(self, &ctx);
                 // a message from the video side (an export finished, closing waits for one)
                 cut::draw_toast(self, &ctx);
             }
@@ -368,6 +408,7 @@ impl BrApp {
                 cut::show(self, &ctx);
                 drop::monitor(self, &ctx);
                 monitor::after(self, &ctx);
+                palette::show(self, &ctx);
                 cut::draw_toast(self, &ctx);
                 // FilmCraft switched its own mode (File ▸ Export ▸ Media…, Import mode's cards):
                 // show the page that has it

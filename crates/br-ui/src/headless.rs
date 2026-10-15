@@ -48,7 +48,7 @@ impl Driver {
     /// One frame in which `paths` are dropped on the window (at the pointer).
     pub fn drop_files(&mut self, app: &mut BrApp, paths: &[std::path::PathBuf]) {
         let mut raw = HeadlessView::raw_input(self.size, self.ppp, self.time, Vec::new());
-        raw.dropped_files = paths.iter().map(|p| std::sync::Arc::new(PathFile(p.clone())) as egui::DroppedFileHandle).collect();
+        raw.dropped_files = paths.iter().map(|p| std::sync::Arc::new(crate::PathFile(p.clone())) as egui::DroppedFileHandle).collect();
         app.raw_input_hook(&self.view.ctx, &mut raw);
         self.view.run(raw, |ui| {
             app.logic(ui.ctx());
@@ -138,17 +138,4 @@ pub fn png(img: &egui::ColorImage) -> Vec<u8> {
     let bytes: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
     let Some(rgba) = lightcraft_raster::Rgba8::from_bytes(img.size[0], img.size[1], &bytes) else { return Vec::new() };
     lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(&rgba), &lightcraft_codecs::EncodeMeta::default()).unwrap_or_default()
-}
-
-/// A file dropped on a headless window.
-#[derive(Debug)]
-struct PathFile(std::path::PathBuf);
-
-impl egui::DroppedFile for PathFile {
-    fn path(&self) -> &std::path::Path {
-        &self.0
-    }
-    fn bytes(&self) -> Result<Vec<u8>, String> {
-        std::fs::read(&self.0).map_err(|e| e.to_string())
-    }
 }

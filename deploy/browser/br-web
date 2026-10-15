@@ -23,6 +23,10 @@ set -euo pipefail
 : "${BR_IMPORT_DIR:=$HOME}"
 : "${BR_VNC_PASSWORD_FILE:=$HOME/.br-web/vnc-passwort}"
 export BR_RENDERER="${BR_RENDERER:-gl}"
+# der Ton der Wiedergabe für die Seite (br-dateien reicht ihn als /api/ton weiter); BR_TON=0: keiner
+if [ "${BR_TON:-1}" != 0 ]; then
+    export BR_AUDIO_STREAM="${BR_AUDIO_STREAM:-$HOME/.br-web/ton.sock}"
+fi
 export LIGHTCRAFT_GPU="${LIGHTCRAFT_GPU:-0}"
 
 # Kein Desktop-Portal auf dem Server-Bildschirm: Datei-Dialoge kommen von zenity.

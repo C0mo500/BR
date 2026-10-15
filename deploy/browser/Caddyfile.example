@@ -19,7 +19,7 @@ br.example.org {
 		header X-Frame-Options SAMEORIGIN
 		reverse_proxy 127.0.0.1:6080
 	}
-	# die Seite, Foto-Upload und Exporte
+	# die Seite, Foto-Upload, Exporte und der Ton (gestreamt: sofort weiterreichen)
 	handle {
 		reverse_proxy 127.0.0.1:6081 {
 			flush_interval -1

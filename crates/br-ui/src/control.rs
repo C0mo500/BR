@@ -419,6 +419,9 @@ fn handle(app: &mut BrApp, ctx: &egui::Context, req: &ControlRequest) -> Option<
         "br.inspect" => {
             let widgets: serde_json::Map<String, Value> =
                 app.widgets.iter().map(|(k, r)| (k.clone(), json!([r.min.x, r.min.y, r.width(), r.height()]))).collect();
+            // what each control runs (the same through engine.execute)
+            let controls: serde_json::Map<String, Value> =
+                app.widgets.keys().filter_map(|k| crate::widgets::commands_of(k).map(|c| (k.clone(), json!(c)))).collect();
             ok(json!({
                 "page": app.page.key(),
                 "video": br_video::state(&mut app.fc.session).unwrap_or(Value::Null),
@@ -426,11 +429,23 @@ fn handle(app: &mut BrApp, ctx: &egui::Context, req: &ControlRequest) -> Option<
                 "popover": app.photo.popover().map(|p| p.key()).or(app.cut.popover().map(|p| p.key())),
                 "inspector": crate::inspector::state(app),
                 "assets": crate::assets::state(app),
+                "palette": crate::palette::state(app),
                 "widgets": widgets,
+                "controls": controls,
             }))
         }
         "br.ui.inspector" => wrap(crate::inspector::control(app, p)),
         "br.ui.assets" => wrap(crate::assets::control(app, p)),
+        "br.drop" => drop_files(app, ctx, p),
+        "br.palette.search" => {
+            let q = p.get("query").and_then(Value::as_str).unwrap_or_default();
+            let limit = p.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
+            ok(crate::palette::search_json(app, q, limit))
+        }
+        "br.palette.run" => {
+            let id = p.get("id").or(p.get("command")).and_then(Value::as_str).unwrap_or_default().to_string();
+            wrap(crate::palette::run_id(app, ctx, &id, p.get("params").cloned().unwrap_or(json!({}))))
+        }
         "ui.render" => {
             let id = p.get("id").and_then(Value::as_u64).unwrap_or(VIDEO_FRAME);
             let size = p.get("size").and_then(Value::as_u64).unwrap_or(1024).clamp(16, 4096) as u32;
@@ -453,9 +468,41 @@ fn handle(app: &mut BrApp, ctx: &egui::Context, req: &ControlRequest) -> Option<
             return run_command(app, ctx, &id, params, &req.reply);
         }
         other => err(format!(
-            "unknown BR request `{other}` (br.page, br.inspect, br.ui.inspector, br.ui.assets, engine.execute with br.*, br.video.* or film.<id>)"
+            "unknown BR request `{other}` (br.page, br.inspect, br.ui.inspector, br.ui.assets, br.palette.search, br.palette.run, br.drop, engine.execute with br.*, br.video.* or film.<id>)"
         )),
     })
+}
+
+/// `br.drop`: files dropped on the window where it cannot see the drop itself (the browser page
+/// over VNC): `paths`, at `screen` (pixels on the screen, as the page computes them from the VNC
+/// picture) or `at` (points in the window); without a place where the pointer is. They are handed
+/// in with the next frame, so they land as a drop from the file manager does: on the timeline or
+/// the monitor as CapCut places them, on the start screen as a new video, on Foto in the library,
+/// on FilmCraft's panels as FilmCraft takes them.
+fn drop_files(app: &mut BrApp, ctx: &egui::Context, p: &Value) -> Value {
+    let paths: Vec<String> = p.get("paths").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+    if paths.is_empty() {
+        return err("br.drop needs `paths`");
+    }
+    if let Some(missing) = paths.iter().find(|p| !Path::new(p).is_file()) {
+        return err(format!("{missing}: no such file"));
+    }
+    let pair = |k: &str| {
+        p.get(k).and_then(Value::as_array).filter(|a| a.len() == 2).and_then(|a| Some(egui::pos2(a[0].as_f64()? as f32, a[1].as_f64()? as f32)))
+    };
+    let at = pair("at").or_else(|| {
+        pair("screen").map(|s| {
+            ctx.input(|i| {
+                let ppp = i.pixels_per_point;
+                let origin = i.viewport().inner_rect.map_or(egui::Pos2::ZERO, |r| r.min);
+                egui::pos2(s.x / ppp - origin.x, s.y / ppp - origin.y)
+            })
+        })
+    });
+    let n = paths.len();
+    app.pending_drop = Some((paths, at));
+    ctx.request_repaint();
+    ok(json!({"dropped": n, "at": at.map(|a| [a.x, a.y])}))
 }
 
 fn run_command(app: &mut BrApp, ctx: &egui::Context, id: &str, params: Value, reply: &Sender<Value>) -> Option<Value> {
@@ -495,6 +542,7 @@ fn run_command(app: &mut BrApp, ctx: &egui::Context, id: &str, params: Value, re
         }
         "br.ui.inspector" => Some(wrap(crate::inspector::control(app, &params))),
         "br.ui.assets" => Some(wrap(crate::assets::control(app, &params))),
+        _ if id.starts_with("br.ui.") => Some(wrap(crate::palette::ui_action(app, ctx, id, false))),
         "br.video.jobs" => Some(ok(json!({"exports": br_video::jobs(&app.fc.session), "captions": crate::cut::caption_status(app)}))),
         "br.video.cancel" if params.get("captions").and_then(Value::as_bool) == Some(true) => {
             Some(ok(json!({"cancelled": crate::cut::cancel_captions(app)})))

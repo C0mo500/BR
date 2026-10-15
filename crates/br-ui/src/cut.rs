@@ -272,7 +272,7 @@ pub(crate) fn run(app: &mut BrApp, ctx: &egui::Context, id: &str, params: Value)
 }
 
 /// FilmCraft's errors start with the command id: the reader wants only the reason.
-fn readable(e: &str) -> String {
+pub(crate) fn readable(e: &str) -> String {
     let mut e = e.trim();
     // "br.video.x: …", FilmCraft's "invalid parameters for `x`: …" and "command `x` is not
     // available right now: …"
@@ -314,6 +314,28 @@ fn has_video(app: &BrApp) -> bool {
 
 fn toggle(app: &mut BrApp, p: Popover, button: Rect) {
     app.cut.open = if app.cut.popover() == Some(p) { None } else { Some((p, button)) };
+}
+
+/// Open a quick tool's popover by its key (`speed`, `export`, …) under its button, as a click on
+/// it does (the command search, keys); `toggle`: closed again when it is open. False when there is
+/// no such popover or it cannot open now (no video for anything but Exportieren's).
+pub(crate) fn open_popover(app: &mut BrApp, key: &str, toggle_it: bool) -> bool {
+    let Some(p) = Popover::ALL.into_iter().find(|p| p.key() == key) else { return false };
+    if p != Popover::Export && !has_video(app) {
+        return false;
+    }
+    if toggle_it && app.cut.popover() == Some(p) {
+        app.cut.open = None;
+        return true;
+    }
+    let button = match p {
+        Popover::Export | Popover::Format => format!("video.{}", p.key()),
+        _ => format!("cut.{}", p.key()),
+    };
+    // the button as last drawn; before it ever was, under the middle of the header
+    let rect = app.widgets.get(&button).copied().unwrap_or_else(|| Rect::from_center_size(egui::pos2(600.0, 60.0), vec2(80.0, 28.0)));
+    app.cut.open = Some((p, rect));
+    true
 }
 
 /// Add media files to the video: one after another at the end (a new video in the first clip's

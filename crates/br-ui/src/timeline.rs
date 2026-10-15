@@ -284,6 +284,16 @@ fn clock(t: Tick, rate: filmcraft_time::FrameRate) -> String {
 }
 
 /// Zoom by `factor` about the time under `at` (screen x; the middle without).
+/// Zoom BR's timeline by `factor` around its middle (0: the whole video), as its buttons do.
+pub(crate) fn zoom_by(app: &mut BrApp, factor: f64) {
+    if factor <= 0.0 {
+        app.timeline.pps = 0.0;
+        return;
+    }
+    let width = app.timeline.layout.as_ref().map_or(800.0, |l| l.lane.width());
+    zoom(&mut app.timeline, factor, None, width);
+}
+
 fn zoom(st: &mut TimelineState, factor: f64, at: Option<(f32, f32)>, width: f32) {
     if st.pps <= 0.0 {
         return;

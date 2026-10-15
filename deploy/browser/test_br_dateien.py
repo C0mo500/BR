@@ -6,6 +6,7 @@ import io
 import json
 import os
 import shutil
+import socket
 import tempfile
 import threading
 import unittest
@@ -187,6 +188,96 @@ class Names(unittest.TestCase):
         long = br.safe_name("ä" * 300 + ".jpg")
         self.assertLessEqual(len(long.encode()), 200)
         self.assertTrue(long.endswith(".jpg"))
+
+
+class Bridge(Server):
+    """Ton und Ablegen: was br-dateien zwischen der Seite und dem BR-Fenster weiterreicht."""
+
+    def setUp(self):
+        super().setUp()
+        h = self.server.RequestHandlerClass
+        h.ton_socket = self.dir / "ton.sock"
+        h.control_info = self.dir / "control.json"
+
+    def fake_br(self, replies):
+        """Ein Steuerkanal wie der von BR: prüft das Token, merkt sich die Anfragen."""
+        srv = socket.create_server(("127.0.0.1", 0))
+        port = srv.getsockname()[1]
+        self.server.RequestHandlerClass.control_info.write_text(json.dumps({"port": port, "token": "geheim", "pid": 1}))
+        seen = []
+
+        def serve():
+            conn, _ = srv.accept()
+            with conn, conn.makefile("rwb") as f:
+                auth = json.loads(f.readline())
+                ok = auth["method"] == "auth" and auth["params"]["token"] == "geheim"
+                f.write((json.dumps({"id": auth["id"], "ok": ok}) + "\n").encode())
+                f.flush()
+                if not ok:
+                    return
+                req = json.loads(f.readline())
+                seen.append(req)
+                f.write((json.dumps({"id": req["id"], **replies}) + "\n").encode())
+                f.flush()
+            srv.close()
+
+        threading.Thread(target=serve, daemon=True).start()
+        return seen
+
+    def test_dropped_files_are_placed_where_they_were_let_go(self):
+        (self.photos / "clip.mp4").write_bytes(b"v")
+        seen = self.fake_br({"ok": True, "result": {"dropped": 1}})
+        body = json.dumps({"dateien": ["clip.mp4"], "x": 640.5, "y": 820})
+        r, data = self.request("POST", "/api/ablegen", body, {"X-BR": "1", "Content-Type": "application/json"})
+        self.assertEqual(r.status, 200, data)
+        self.assertEqual(seen[0]["method"], "br.drop")
+        self.assertEqual(seen[0]["params"], {"paths": [str(self.photos / "clip.mp4")], "screen": [640.5, 820.0]})
+
+    def test_dropping_needs_the_own_page_an_uploaded_file_and_br(self):
+        (self.photos / "a.jpg").write_bytes(b"a")
+        body = json.dumps({"dateien": ["a.jpg"]})
+        self.assertEqual(self.request("POST", "/api/ablegen", body)[0].status, 403)
+        for bad in (["../a.jpg"], ["fehlt.jpg"], [".versteckt"]):
+            r, _ = self.request("POST", "/api/ablegen", json.dumps({"dateien": bad}), {"X-BR": "1"})
+            self.assertEqual(r.status, 404, bad)
+        self.assertEqual(self.request("POST", "/api/ablegen", "kein json", {"X-BR": "1"})[0].status, 400)
+        # BR without its control channel
+        r, data = self.request("POST", "/api/ablegen", body, {"X-BR": "1"})
+        self.assertEqual(r.status, 503, data)
+        # BR refuses (a file it cannot take)
+        self.fake_br({"ok": False, "error": "a.jpg: no such file"})
+        r, data = self.request("POST", "/api/ablegen", body, {"X-BR": "1"})
+        self.assertEqual(r.status, 422)
+        self.assertIn("no such file", json.loads(data)["fehler"])
+
+    def test_the_sound_is_passed_on_as_it_comes(self):
+        self.assertEqual(self.request("GET", "/api/ton", headers={"X-BR": "1"})[0].status, 503, "BR plays nothing")
+        sock = self.server.RequestHandlerClass.ton_socket
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(str(sock))
+        srv.listen()
+        pcm = bytes(range(256)) * 64
+
+        def play():
+            conn, _ = srv.accept()
+            with conn:
+                conn.sendall(pcm)
+
+        threading.Thread(target=play, daemon=True).start()
+        self.assertEqual(self.request("GET", "/api/ton")[0].status, 403)
+        r, data = self.request("GET", "/api/ton", headers={"X-BR": "1"})
+        self.assertEqual(r.status, 200)
+        self.assertEqual(r.getheader("X-Accel-Buffering"), "no")
+        self.assertEqual(data, pcm)
+        srv.close()
+        r, js = self.request("GET", "/ton.js")
+        self.assertEqual(r.status, 200)
+        self.assertIn(b'registerProcessor("br-ton"', js)
+
+    def test_the_page_has_the_sound_button(self):
+        _, body = self.request("GET", "/")
+        self.assertIn(b'id="ton"', body)
+        self.assertIn(b"api/ablegen", body)
 
 
 if __name__ == "__main__":

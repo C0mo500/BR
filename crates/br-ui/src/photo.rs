@@ -164,6 +164,22 @@ pub fn header_tools(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
     }
 }
 
+/// Open one of the Foto page's popovers by its key (`looks`, `format`, `export`) under its
+/// button, as a click on it does; `toggle_it`: closed when it is open.
+pub(crate) fn open_popover(app: &mut BrApp, key: &str, toggle_it: bool) -> bool {
+    let Some(p) = Popover::ALL.into_iter().find(|p| p.key() == key) else { return false };
+    if toggle_it && app.photo.popover() == Some(p) {
+        finish_drags(app);
+        app.photo.open = None;
+        return true;
+    }
+    let rect =
+        app.widgets.get(&format!("tool.{key}")).copied().unwrap_or_else(|| Rect::from_center_size(egui::pos2(1200.0, 20.0), egui::vec2(80.0, 28.0)));
+    finish_drags(app);
+    app.photo.open = Some((p, rect));
+    true
+}
+
 fn toggle(app: &mut BrApp, p: Popover, button: Rect) {
     finish_drags(app);
     app.photo.open = if app.photo.popover() == Some(p) { None } else { Some((p, button)) };

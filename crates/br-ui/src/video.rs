@@ -125,6 +125,9 @@ fn layout(fc: &FilmcraftApp, page: Page) -> (FcMode, DockNode) {
 pub fn new_app(mut session: br_video::Session) -> FilmcraftApp {
     german_by_default(&mut session);
     let mut fc = FilmcraftApp::new(session);
+    // BR's commands among FilmCraft's keys, which start as CapCut's
+    crate::keys::register(&mut fc);
+    crate::keys::install(&mut fc);
     fc.ui.show_header = false;
     fc.ui.show_menu_bar = false;
     // the pages bring their own layouts: FilmCraft must not reopen its last workspace over them on

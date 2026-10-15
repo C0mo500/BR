@@ -23,6 +23,8 @@ pub mod pointer;
 pub mod prefs;
 #[cfg(target_os = "macos")]
 mod screen_profile;
+#[cfg(unix)]
+pub mod stream;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

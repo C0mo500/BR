@@ -238,8 +238,13 @@ pub fn attach(fc: &mut filmcraft_ui_egui::FilmcraftApp, cc: &eframe::CreationCon
     if let Some(rs) = cc.wgpu_render_state.clone() {
         fc.set_wgpu(rs);
     }
+    // on a server used in the browser the sound goes to the page (br-web sets BR_AUDIO_STREAM)
+    #[cfg(unix)]
+    if let Some(path) = std::env::var_os("BR_AUDIO_STREAM").filter(|p| !p.is_empty()) {
+        fc.audio = Some(Box::new(super::stream::StreamOut::new(std::path::Path::new(&path))));
+    }
     #[cfg(feature = "audio")]
-    {
+    if fc.audio.is_none() {
         fc.audio = Some(Box::new(super::audio::CpalOut::new()));
     }
 }
