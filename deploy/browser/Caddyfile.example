@@ -1,0 +1,55 @@
+# BR im Browser hinter Caddy: HTTPS (Let's Encrypt) und Login.
+# Passwort-Hash erzeugen: caddy hash-password   (Caddy ab 2.8 schreibt die Direktive basic_auth)
+
+br.example.org {
+	basicauth {
+		ich $2a$14$HASH_VON_caddy_hash-password
+	}
+	# noVNC und seine WebSocket-Verbindung
+	handle_path /novnc/* {
+		# Nur die eigene Seite darf noVNC öffnen und die Verbindung zu BR aufbauen: der Browser
+		# schickt den Login auch mit, wenn eine fremde Webseite es versucht.
+		@fremd {
+			header Origin *
+			not header Origin {scheme}://{hostport}
+		}
+		respond @fremd 403
+		@fremdseite header_regexp Sec-Fetch-Site ^(cross-site|same-site)$
+		respond @fremdseite 403
+		header X-Frame-Options SAMEORIGIN
+		reverse_proxy 127.0.0.1:6080
+	}
+	# die Seite, Foto-Upload, Exporte und der Ton (gestreamt: sofort weiterreichen)
+	handle {
+		reverse_proxy 127.0.0.1:6081 {
+			flush_interval -1
+		}
+	}
+}
+
+# Oder unter einem Pfad einer bestehenden Domain, z. B. https://example.org/br/ :
+#
+# example.org {
+# 	redir /br /br/
+# 	handle_path /br/* {
+# 		basicauth {
+# 			ich $2a$14$HASH
+# 		}
+# 		handle_path /novnc/* {
+# 			@fremd {
+# 				header Origin *
+# 				not header Origin {scheme}://{hostport}
+# 			}
+# 			respond @fremd 403
+# 			@fremdseite header_regexp Sec-Fetch-Site ^(cross-site|same-site)$
+# 			respond @fremdseite 403
+# 			header X-Frame-Options SAMEORIGIN
+# 			reverse_proxy 127.0.0.1:6080
+# 		}
+# 		handle {
+# 			reverse_proxy 127.0.0.1:6081 {
+# 				flush_interval -1
+# 			}
+# 		}
+# 	}
+# }

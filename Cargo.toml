@@ -1,25 +1,137 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "apps/*"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
+repository = "https://github.com/C0mo500/BR"
 
 [workspace.dependencies]
-# LightCraft (photo engine), pinned to one upstream commit
+# internal
+br-photo = { path = "crates/br-photo" }
+br-mcp = { path = "crates/br-mcp" }
+br-ui = { path = "crates/br-ui" }
+br-video = { path = "crates/br-video" }
+
+# LightCraft (photo engine and its Pro interface), all pinned to one upstream commit
 lightcraft-engine = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
 lightcraft-ui-egui = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
 lightcraft-mcp = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
+lightcraft-geom = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
+lightcraft-raster = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
+lightcraft-codecs = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
+lightcraft-sysmem = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
+
+# video: FilmCraft (Premiere-style editor: timeline, colour, sound, captions, export), the
+# release BR is built and tested against
+filmcraft-engine = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-ui-egui = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-export = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-project = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-render = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-time = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-media = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-speech = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-gpu = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-platform = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-automation = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-edit = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-geom = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-audio-dsp = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+
+# ui (same versions as LightCraft)
 egui = "0.36"
 eframe = { version = "0.36", default-features = false }
+rfd = "0.17"
+# audio output for video playback (as FilmCraft)
+cpal = "0.16"
+# files and images on the system clipboard for FilmCraft's Paste (egui already uses it for text)
+arboard = "3"
+# the window's desktop services (as in LightCraft's desktop app). Linux: the desktop's dark/light
+# setting (XDG settings portal) and the display's ICC profile (colord); pure Rust, the version
+# accesskit already brings in, pinned to it.
+zbus = "=5.19.0"
+x11rb = { version = "0.13.2", default-features = false }
+# macOS: the profile of the screen showing the window (safe AppKit bindings; wgpu uses the same)
+objc2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSColorSpace", "NSResponder", "NSScreen", "NSWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData"] }
+
+# foundation
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+getrandom = "0.3"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+sys-locale = "0.3"
+log = "0.4"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+too_many_arguments = "allow"
+type_complexity = "allow"
 
 [profile.dev.package."*"]
 opt-level = 2
+# dependencies' debug info made each test binary about 1 GB; line tables are enough for traces
+debug = "line-tables-only"
 
 [profile.dev]
 opt-level = 1
+debug = "line-tables-only"
+
+# FilmCraft's codec and audio hot loops (as in its own workspace): playback and tests are minutes
+# slower below opt-level 3
+[profile.dev.package.filmcraft-h264]
+opt-level = 3
+
+[profile.dev.package.filmcraft-h264enc]
+opt-level = 3
+
+[profile.dev.package.filmcraft-hevc]
+opt-level = 3
+
+[profile.dev.package.filmcraft-prores]
+opt-level = 3
+
+[profile.dev.package.filmcraft-dnx]
+opt-level = 3
+
+[profile.dev.package.filmcraft-apv]
+opt-level = 3
+
+[profile.dev.package.filmcraft-dng]
+opt-level = 3
+
+[profile.dev.package.filmcraft-av1]
+opt-level = 3
+
+[profile.dev.package.filmcraft-aac]
+opt-level = 3
+
+[profile.dev.package.filmcraft-flac]
+opt-level = 3
+
+[profile.dev.package.filmcraft-audio-dsp]
+opt-level = 3
+
+[profile.dev.package.filmcraft-mxf]
+opt-level = 3
+
+[profile.dev.package.filmcraft-opus]
+opt-level = 3
+
+[profile.dev.package.filmcraft-vp8]
+opt-level = 3
+
+[profile.dev.package.filmcraft-vp9]
+opt-level = 3
+
+[profile.release]
+debug = "line-tables-only"

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Openbox für BR im Browser: das BR-Fenster füllt den Bildschirm ohne Rahmen; Dialoge lassen
+     sich verschieben. Kein Desktop-Menü, keine Tastenkürzel: auf diesem Bildschirm gibt es nur BR.
+     Keine Klick-Belegung im Kontext "Frame": die fängt jeden Klick ab, statt ihn an das Fenster
+     weiterzugeben (nur "Client" gibt ihn weiter). -->
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <focus>
+    <focusNew>yes</focusNew>
+    <followMouse>no</followMouse>
+  </focus>
+  <placement>
+    <policy>Smart</policy>
+    <center>yes</center>
+  </placement>
+  <theme>
+    <name>Clearlooks</name>
+    <titleLayout>LC</titleLayout>
+  </theme>
+  <desktops>
+    <number>1</number>
+  </desktops>
+  <keyboard/>
+  <mouse>
+    <context name="Client">
+      <mousebind button="Left" action="Press">
+        <action name="Focus"/>
+        <action name="Raise"/>
+      </mousebind>
+    </context>
+    <context name="Titlebar">
+      <mousebind button="Left" action="Press">
+        <action name="Focus"/>
+        <action name="Raise"/>
+      </mousebind>
+      <mousebind button="Left" action="Drag">
+        <action name="Move"/>
+      </mousebind>
+    </context>
+    <context name="Close">
+      <mousebind button="Left" action="Click">
+        <action name="Close"/>
+      </mousebind>
+    </context>
+  </mouse>
+  <applications>
+    <!-- nur das Hauptfenster (Titel beim Öffnen: "BR"); ein zweites Fenster aus dem Pro-Modus
+         behält Rahmen und Schließen-Knopf. "below": Dialoge bleiben über BR, auch nach einem
+         Klick auf BR – sonst verschwände ein Datei-Dialog hinter dem bildschirmfüllenden Fenster. -->
+    <application class="br" title="BR" type="normal">
+      <decor>no</decor>
+      <maximized>yes</maximized>
+      <layer>below</layer>
+    </application>
+  </applications>
+</openbox_config>

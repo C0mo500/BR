@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  LIGHTCRAFT_GPU: "0"
+  # the video tests run on real files made by ffmpeg: here they must not be skipped
+  BR_REQUIRE_FFMPEG: "1"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: System packages
+        # ALSA headers for the window's sound (cpal), ffmpeg for the video tests
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev ffmpeg
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell scripts
+        run: bash -n deploy/browser/br-web deploy/browser/install.sh && shellcheck deploy/browser/br-web deploy/browser/install.sh
+      - name: br-dateien
+        run: python3 -m unittest discover -s deploy/browser -v
