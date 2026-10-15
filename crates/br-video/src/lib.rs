@@ -26,6 +26,9 @@
 //! | `br.video.autoCaptions` | captions from the speech in the video (Whisper, see [`speech`]) |
 //! | `br.video.music` | a music file on its own track, as long as the video, lowered under speech |
 //! | `br.video.filter` | a look on the selected clips (all without a selection), replacing the last |
+//! | `br.video.transform`, `br.video.fit` | where a picture is in the frame; fit, fill, reset |
+//! | `br.video.background` | fill the frame behind the main clips: blurred, a colour or a picture |
+//! | `br.video.reframe` | pictures of another shape fill the frame and follow their subject |
 //! | `br.video.format` | another shape (9:16, 16:9, 1:1, 4:5); the clips fit or fill it |
 //! | `br.video.transition` | the default transition (a dissolve) at the cuts of the selected clips |
 //! | `br.video.export` | an MP4 in a preset for TikTok/Reels/Shorts, YouTube, … |
@@ -39,6 +42,7 @@ use serde_json::{Value, json};
 pub use filmcraft_engine::Session;
 
 pub mod anchors;
+pub mod frame;
 pub mod inspect;
 pub mod magnet;
 pub mod main_track;
@@ -244,9 +248,29 @@ pub const COMMANDS: &[CommandInfo] = &[
         summary: "Captions from the speech in the video (Whisper; the model is downloaded the first time). wait:false (window, br mcp) runs it in the background: see br.video.jobs",
     },
     CommandInfo {
+        id: "br.video.transform",
+        params: r#"{"clips":[id]?,"position":[x,y]?,"scale":f64?,"rotation":f64?,"anchor":[x,y]?,"opacity":f64?,"keyframe":bool?,"gesture":str?}"#,
+        summary: "Where the selected pictures are: position (frame pixels), scale (%), rotation (degrees), anchor, opacity; at the playhead when they animate (keyframe:true writes one). One undo step; calls with the same `gesture` are one",
+    },
+    CommandInfo {
+        id: "br.video.fit",
+        params: r#"{"clips":[id]?,"mode":"fit|fill|reset"="fit"}"#,
+        summary: "Fit the selected pictures into the frame, fill it with them, or put their Motion back",
+    },
+    CommandInfo {
+        id: "br.video.background",
+        params: r##"{"mode":"blur|color|image|none"="blur","clips":[id]?,"amount":0..100=50,"color":"#rrggbb"?,"path":str?}"##,
+        summary: "Fill the frame behind the main clips (chosen, else selected, else all): the clip itself blurred, a colour or a picture, on a track below the main track that follows the clip; none takes it away",
+    },
+    CommandInfo {
+        id: "br.video.reframe",
+        params: r#"{"clips":[id]?,"on":bool=true,"speed":"slow|default|fast"="default"}"#,
+        summary: "Pictures of another shape than the frame fill it and follow their subject (Auto Reframe); on:false: they fit again",
+    },
+    CommandInfo {
         id: "br.video.format",
-        params: r#"{"format":"9:16|16:9|1:1|4:5","fit":"fit|fill"=fit}"#,
-        summary: "Change the video's shape; its clips fit into it (or fill it)",
+        params: r#"{"format":"9:16|16:9|1:1|4:5","fit":"fit|fill|reframe"=fit}"#,
+        summary: "Change the video's shape; its clips fit into it, fill it, or fill it following their subject (reframe); backgrounds always fill it",
     },
     CommandInfo {
         id: "br.video.transition",
@@ -531,12 +555,12 @@ fn prepare(s: &mut Session) -> filmcraft_engine::Result<()> {
 
 /// The clips a command works on: `clips`, else the selection; never a background (it belongs to
 /// its main clip, which is taken instead).
-fn chosen_or_selected(s: &Session, p: &Value) -> Vec<filmcraft_project::ClipId> {
+pub(crate) fn chosen_or_selected(s: &Session, p: &Value) -> Vec<filmcraft_project::ClipId> {
     let Some(q) = s.active_sequence() else { return Vec::new() };
     let mut out: Vec<filmcraft_project::ClipId> = Vec::new();
     for c in chosen_clips(s, p).into_iter().map(filmcraft_project::ClipId) {
         let c = match q.find_item(c) {
-            Some((_, it)) if main_track::is_background(it) => match main_track::partners(q, c).into_iter().find(|p| magnet::is_main(q, *p)) {
+            Some((_, it)) if main_track::is_background(it) => match main_track::main_of(q, c) {
                 Some(m) => m,
                 None => continue,
             },
@@ -951,14 +975,26 @@ fn execute_br(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
                 return Err(err(id, "Bild und Ton dieser Clips sind schon getrennt"));
             }
             let n = s
-                .edit_sequence("Ton trennen", |q, _, _| {
+                .edit_sequence("Ton trennen", |q, ctx, _| {
                     let links: Vec<u64> =
                         q.all_tracks().flat_map(|t| t.items.iter()).filter(|it| chosen.contains(&it.id.0)).filter_map(|it| it.link).collect();
                     let mut n = 0;
-                    for it in q.all_tracks_mut().flat_map(|t| t.items.iter_mut()) {
+                    for it in q.audio_tracks.iter_mut().flat_map(|t| t.items.iter_mut()) {
                         if it.link.is_some_and(|l| links.contains(&l)) {
                             it.link = None;
                             n += 1;
+                        }
+                    }
+                    // a picture and its filled background stay together, under a link of their own
+                    for l in links {
+                        let pictures: Vec<filmcraft_project::ClipId> =
+                            q.video_tracks.iter().flat_map(|t| &t.items).filter(|it| it.link == Some(l)).map(|it| it.id).collect();
+                        let fresh = (pictures.len() > 1).then(|| ctx.alloc());
+                        for c in pictures {
+                            if let Some((_, it)) = q.find_item_mut(c) {
+                                it.link = fresh;
+                                n += usize::from(fresh.is_none());
+                            }
                         }
                     }
                     Ok(n)
@@ -1077,30 +1113,39 @@ fn execute_br(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
         "br.video.format" => {
             let key = str_param(id, p, "format")?;
             let format = Format::find(key).ok_or_else(|| err(id, format!("unknown format `{key}`: 9:16, 16:9, 1:1 or 4:5")))?;
-            let fill = match p.get("fit").and_then(Value::as_str) {
-                None | Some("fit") => false,
-                Some("fill") => true,
-                Some(other) => return Err(err(id, format!("`fit` is fit or fill, not `{other}`"))),
-            };
+            let mode = p.get("fit").and_then(Value::as_str).unwrap_or("fit");
+            if !matches!(mode, "fit" | "fill" | "reframe") {
+                return Err(err(id, format!("`fit` is fit, fill or reframe, not `{mode}`")));
+            }
             if s.active_sequence().is_none() {
                 return Err(err(id, "noch kein Video: erst br.video.new oder br.video.add"));
             }
             let (w, h) = format.size();
+            let before = s.active_sequence().cloned().ok_or_else(|| err(id, "no video yet"))?;
             s.edit_group(&format!("Format {}", format.key()), |s| {
-                // titles, graphics and nested sequences move and scale with the frame
+                // the picture scales with the frame (FilmCraft fits the old frame into the new one);
+                // titles and shapes are laid out for the new frame
                 s.execute("sequence.settings", json!({"width": w, "height": h, "scaleMotion": true}))?;
-                let seq = s.execute("sequence.inspect", json!({}))?;
+                frame::refit_graphics(s, &before)?;
                 // an animated (keyframed) position or scale is the user's: it stays
                 let animated = |c: &u64| {
                     s.active_sequence()
                         .and_then(|q| q.find_item(filmcraft_project::ClipId(*c)))
                         .is_some_and(|(_, it)| it.effect("motion").is_some_and(|m| m.params.values().any(|p| !p.keyframes.is_empty())))
                 };
-                let clips: Vec<u64> = media_video_clips(s, &seq).into_iter().filter(|c| !animated(c)).collect();
-                if !clips.is_empty() {
-                    s.execute(if fill { "clip.fillFrame" } else { "clip.fitToFrame" }, json!({"clips": clips}))?;
+                let clips: Vec<u64> = frame::to_fit(s).into_iter().filter(|c| !animated(c)).collect();
+                if mode == "reframe" {
+                    let ids: Vec<filmcraft_project::ClipId> = clips.iter().copied().map(filmcraft_project::ClipId).collect();
+                    frame::reframe_clips(s, &ids, true, 1)?;
                 }
-                Ok(Value::Null)
+                // what does not reframe fits or fills
+                let rest = frame::to_fit(s);
+                let clips: Vec<u64> = clips.into_iter().filter(|c| rest.contains(c)).collect();
+                if !clips.is_empty() {
+                    s.execute(if mode == "fill" { "clip.fillFrame" } else { "clip.fitToFrame" }, json!({"clips": clips}))?;
+                }
+                // backgrounds fill the new frame; Auto Reframe frames for it
+                frame::after_format(s)
             })
             .map_err(|e| e.to_string())?;
             state(s)
@@ -1229,6 +1274,10 @@ fn execute_br(s: &mut Session, id: &str, p: &Value) -> Result<Value, String> {
         }
         "br.video.state" => state(s),
         "br.video.inspect" => inspect::inspect(s, p),
+        "br.video.transform" => frame::transform(s, p).map_err(|e| err(id, e)),
+        "br.video.fit" => frame::fit(s, p).map_err(|e| err(id, e)),
+        "br.video.background" => frame::background(s, p).map_err(|e| err(id, e)),
+        "br.video.reframe" => frame::reframe(s, p).map_err(|e| err(id, e)),
         "br.video.place" => place::place(s, p).map_err(|e| err(id, e)),
         "br.video.set" => inspect::set(s, p).map_err(|e| err(id, e)),
         "br.video.keyframe" => inspect::keyframe(s, p).map_err(|e| err(id, e)),

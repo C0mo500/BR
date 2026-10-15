@@ -79,9 +79,9 @@ impl Kind {
     /// The Basis sections of this kind, in order.
     fn sections(self) -> &'static [&'static Section] {
         match self {
-            Kind::Video => &[&TRANSFORM, &CROP, &OPACITY, &ADJUST, &SPEED, &CLIP_AUDIO],
-            Kind::Picture => &[&TRANSFORM, &CROP, &OPACITY, &ADJUST],
-            Kind::Nested => &[&TRANSFORM, &OPACITY, &ADJUST, &SPEED, &CLIP_AUDIO],
+            Kind::Video => &[&TRANSFORM, &BACKGROUND, &CROP, &OPACITY, &ADJUST, &SPEED, &CLIP_AUDIO],
+            Kind::Picture => &[&TRANSFORM, &BACKGROUND, &CROP, &OPACITY, &ADJUST],
+            Kind::Nested => &[&TRANSFORM, &BACKGROUND, &OPACITY, &ADJUST, &SPEED, &CLIP_AUDIO],
             Kind::Adjustment => &[&OPACITY, &ADJUST],
             Kind::Text => &[&TEXT, &STYLE, &LAYER_TRANSFORM],
             Kind::Shape => &[&SHAPE, &STYLE, &LAYER_TRANSFORM],
@@ -132,6 +132,12 @@ enum T {
     /// A key of the caption track's style (`captions.setStyle`).
     CaptionStyle(&'static str),
     TransitionDuration,
+    /// How the frame behind a main clip is filled (`br.video.background`): none, blur, color.
+    BgMode,
+    BgAmount,
+    BgColor,
+    /// The picture fills the frame and follows its subject (`br.video.reframe`).
+    Reframe,
 }
 
 struct Row {
@@ -174,9 +180,16 @@ const TRANSFORM: Section = Section {
         rs("rotation", "Drehen", P(Id("motion"), "rotation"), -180.0, 180.0),
         r("flipH", "Horizontal spiegeln", T::Has("horizontal_flip")),
         r("flipV", "Vertikal spiegeln", T::Has("vertical_flip")),
+        r("reframe", "Motiv folgen", T::Reframe),
         r("fit", "Einpassen", T::Fit),
         r("fill", "Füllen", T::Fill),
     ],
+};
+
+const BACKGROUND: Section = Section {
+    key: "background",
+    label: "Hintergrund",
+    rows: &[r("mode", "Hintergrund", T::BgMode), r("amount", "Unschärfe", T::BgAmount), r("color", "Farbe", T::BgColor)],
 };
 
 const CROP: Section = Section {
@@ -373,7 +386,7 @@ pub fn subject(s: &Session, p: &Value) -> Option<Subject> {
 
 fn main_of_background(q: &Sequence, c: ClipId) -> ClipId {
     match q.find_item(c) {
-        Some((_, it)) if main_track::is_background(it) => main_track::partners(q, c).into_iter().find(|p| magnet::is_main(q, *p)).unwrap_or(c),
+        Some((_, it)) if main_track::is_background(it) => main_track::main_of(q, c).unwrap_or(c),
         _ => c,
     }
 }
@@ -570,7 +583,7 @@ fn schema_json(def: &ParamDef, slider: Option<(f64, f64)>) -> serde_json::Map<St
 
 /// A value checked against a parameter's schema, as `effects.setParam` takes it: floats held in
 /// their range, choices by index or name, colours from hex or 0…1 components.
-fn param_input(def: &ParamDef, v: &Value) -> Result<Value, String> {
+pub(crate) fn param_input(def: &ParamDef, v: &Value) -> Result<Value, String> {
     let bad = |what: &str| format!("`{}` {what}", def.id);
     Ok(match &def.kind {
         ParamKind::Float { min, max, .. } => {
@@ -665,6 +678,7 @@ fn param_json(
 
 /// Everything the inspector needs from the session for one subject.
 struct Ctx<'a> {
+    s: &'a Session,
     q: &'a Sequence,
     t: Tick,
     layer: usize,
@@ -730,6 +744,38 @@ fn row_json(cx: &Ctx, subject: Subject, section: &Section, row: &Row) -> Option<
                     m.insert("effect".into(), json!(i));
                 }
                 T::Ducking => plain(&mut m, "bool", json!(it.essential.as_ref().is_some_and(|e| e.ducking.enabled)), json!(false)),
+                T::BgMode | T::BgAmount | T::BgColor => {
+                    // backgrounds are behind main clips only
+                    if !magnet::is_main(q, c) {
+                        return None;
+                    }
+                    let fill = crate::frame::fill_of(q, c);
+                    match row.t {
+                        T::BgMode => {
+                            let mode = match &fill {
+                                crate::frame::Fill::None => "none",
+                                crate::frame::Fill::Blur(_) => "blur",
+                                crate::frame::Fill::Color(_) => "color",
+                                crate::frame::Fill::Image(_) => "image",
+                            };
+                            plain(&mut m, "choice", json!(mode), json!("none"));
+                            m.insert("options".into(), json!(["none", "blur", "color"]));
+                        }
+                        T::BgAmount => {
+                            let a = if let crate::frame::Fill::Blur(a) = fill { a } else { 50.0 };
+                            float(&mut m, a, 50.0, (0.0, 100.0), "", 0);
+                        }
+                        _ => {
+                            let c = if let crate::frame::Fill::Color(c) = fill { c } else { "#000000".into() };
+                            plain(&mut m, "color", json!(c), json!("#000000"));
+                        }
+                    }
+                }
+                // only a picture of another shape than the frame has something to reframe
+                T::Reframe if crate::frame::other_shape(cx.s, q, it) => {
+                    plain(&mut m, "bool", json!(it.effect("auto_reframe").is_some()), json!(false))
+                }
+                T::Reframe => return None,
                 T::DuckDb => {
                     let db = it.essential.as_ref().map_or(-15.0, |e| e.ducking.reduce_db);
                     float(&mut m, db, -15.0, (-40.0, 0.0), "dB", 1);
@@ -843,7 +889,7 @@ pub fn inspect(s: &Session, p: &Value) -> Result<Value, String> {
         _ => s.playhead(),
     };
     let mehr = matches!(p.get("level").and_then(Value::as_str), Some("mehr" | "all" | "full"));
-    let cx = Ctx { q, t, layer: layer_choice(s) };
+    let cx = Ctx { s, q, t, layer: layer_choice(s) };
     let mut out = match subject {
         Subject::Clip(c) => {
             let (_, it) = q.find_item(c).ok_or("no such clip")?;
@@ -893,7 +939,7 @@ fn row_keys(kind: Kind) -> Vec<String> {
 
 /// Run `f` as one undo step `label`. With a `gesture`, the steps of one drag fold into its first
 /// (as FilmCraft's merge does, but on the history, so any command can take part).
-fn step<X>(s: &mut Session, label: &str, gesture: Option<&str>, f: impl FnOnce(&mut Session) -> R<X>) -> R<X> {
+pub(crate) fn step<X>(s: &mut Session, label: &str, gesture: Option<&str>, f: impl FnOnce(&mut Session) -> R<X>) -> R<X> {
     let key = gesture.map(|g| format!("br.gesture:{g}"));
     let merge = key.is_some() && s.history.merge_key == key && s.history.undo.last().is_some_and(|u| u.0 == label);
     let top = s.history.undo.last().map(|u| Arc::as_ptr(&u.1));
@@ -1035,7 +1081,7 @@ pub fn set(s: &mut Session, p: &Value) -> Result<Value, String> {
                 Subject::Caption(_) => Some(Kind::Caption),
                 Subject::Transition(_) => Some(Kind::Transition),
             };
-            let cx = Ctx { q, t, layer: layer_n };
+            let cx = Ctx { s, q, t, layer: layer_n };
             kind.and_then(|k| find_row(k, key)).and_then(|(sec, row)| row_json(&cx, tg.subject, sec, row)).unwrap_or(Value::Null)
         }
         None => param_after(s, &tg, t, layer_n).unwrap_or(Value::Null),
@@ -1144,6 +1190,24 @@ fn apply(s: &mut Session, tg: &Target, value: Value, input: Option<Value>, keyfr
             let (_, it) = q.find_item(c).ok_or_else(|| other("no such clip"))?;
             let (i, _) = layer(it, layer_n).ok_or_else(|| other("the clip has no text"))?;
             s.execute("graphics.setText", json!({"clip": c.0, "layer": layer_ordinal(it, i), "text": text}))?;
+            Ok(None)
+        }
+        (Subject::Clip(_), T::BgMode | T::BgAmount | T::BgColor) => {
+            let c = tg.clip.ok_or_else(|| other("no clip"))?;
+            let p = match tg.t {
+                T::BgMode => json!({"clip": c.0, "mode": value.as_str().ok_or_else(|| other("Hintergrund: none, blur or color"))?}),
+                T::BgAmount => json!({"clip": c.0, "mode": "blur", "amount": want_f64(&value, &tg.label)?}),
+                _ => {
+                    let col = color_in(&value).ok_or_else(|| other("Farbe takes #rrggbb"))?;
+                    json!({"clip": c.0, "mode": "color", "color": hex([col[0], col[1], col[2], 1.0])})
+                }
+            };
+            crate::frame::background(s, &p).map_err(other)?;
+            Ok(None)
+        }
+        (Subject::Clip(_), T::Reframe) => {
+            let c = tg.clip.ok_or_else(|| other("no clip"))?;
+            crate::frame::reframe(s, &json!({"clip": c.0, "on": want_bool(&value, &tg.label)?})).map_err(other)?;
             Ok(None)
         }
         (Subject::Clip(_), T::Ducking) => {

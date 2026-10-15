@@ -39,6 +39,7 @@ filmcraft-gpu = { git = "https://github.com/storytold/filmcraft", rev = "f03e215
 filmcraft-platform = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
 filmcraft-automation = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
 filmcraft-edit = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-geom = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
 filmcraft-audio-dsp = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
 
 # ui (same versions as LightCraft)

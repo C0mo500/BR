@@ -182,6 +182,12 @@ pub fn partners(q: &Sequence, clip: ClipId) -> Vec<ClipId> {
     out
 }
 
+/// The main clip a background belongs to (the clip on the main track it shares its link with).
+pub fn main_of(q: &Sequence, background: ClipId) -> Option<ClipId> {
+    let link = q.find_item(background).and_then(|(_, it)| it.link)?;
+    main_track(q)?.items.iter().find(|it| it.link == Some(link) && !is_background(it)).map(|it| it.id)
+}
+
 /// Is the main track marked (a video BR has worked on)?
 pub fn is_marked(q: &Sequence) -> bool {
     q.video_tracks.iter().any(|t| marked(&t.effects, MAIN))

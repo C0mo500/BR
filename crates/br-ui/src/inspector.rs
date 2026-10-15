@@ -759,7 +759,10 @@ pub fn de(s: &str) -> &str {
         "Ellipse" => "Ellipse",
         "Polygon" => "Vieleck",
         "Path" => "Pfad",
-        "None" => "Keiner",
+        "None" | "none" => "Keiner",
+        "blur" => "Unscharf",
+        "color" => "Farbe",
+        "image" => "Bild",
         other => other,
     }
 }

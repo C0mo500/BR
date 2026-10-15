@@ -119,7 +119,8 @@ pub struct CutState {
     /// The language chosen for automatic captions (a key of [`LANGUAGES`]).
     pub caption_language: &'static str,
     /// A new format makes the clips fill the frame instead of fitting into it.
-    pub fill: bool,
+    /// How clips meet a new format: fit, fill, reframe (fill following their subject).
+    pub fit_mode: &'static str,
     /// The start screen was left without a video ("Leerer Editor").
     pub start_dismissed: bool,
     pub(crate) picking: Option<(PickFor, Receiver<Vec<PathBuf>>)>,
@@ -143,7 +144,7 @@ impl Default for CutState {
             last_export: None,
             captions: None,
             caption_language: "auto",
-            fill: false,
+            fit_mode: "fit",
             start_dismissed: false,
             picking: None,
             looks: None,
@@ -953,34 +954,54 @@ fn format_panel(app: &mut BrApp, ui: &mut Ui, t: &Theme) {
         ratio_icon(ui, pos2(r.rect.right() - 28.0, r.rect.center().y), f, 24.0, if on { ACCENT } else { t.dim });
         app.widgets.insert(format!("vformat.{}", f.key()), r.rect);
         if r.clicked() && !on {
-            let fit = if app.cut.fill { "fill" } else { "fit" };
-            run(app, &ctx, "br.video.format", json!({"format": f.key(), "fit": fit}));
+            run(app, &ctx, "br.video.format", json!({"format": f.key(), "fit": app.cut.fit_mode}));
         }
         ui.add_space(6.0);
     }
     ui.add_space(2.0);
     let mut refit = None;
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new("Clips").size(12.5).color(t.dim));
-        let r = ui.selectable_label(!app.cut.fill, "einpassen");
-        app.widgets.insert("vformat.fit".into(), r.rect);
-        if r.clicked() && app.cut.fill {
-            refit = Some(false);
-        }
-        let r = ui.selectable_label(app.cut.fill, "füllend");
-        app.widgets.insert("vformat.fill".into(), r.rect);
-        if r.clicked() && !app.cut.fill {
-            refit = Some(true);
+        for (mode, label) in [("fit", "einpassen"), ("fill", "füllend"), ("reframe", "automatisch")] {
+            let r = ui.selectable_label(app.cut.fit_mode == mode, label);
+            app.widgets.insert(format!("vformat.{mode}"), r.rect);
+            if r.clicked() && app.cut.fit_mode != mode {
+                refit = Some(mode);
+            }
         }
     });
     // the clips of this video, now
-    if let Some(fill) = refit {
-        app.cut.fill = fill;
+    if let Some(mode) = refit {
+        app.cut.fit_mode = mode;
         if let Some(f) = current {
-            run(app, &ctx, "br.video.format", json!({"format": f.key(), "fit": if fill { "fill" } else { "fit" }}));
+            run(app, &ctx, "br.video.format", json!({"format": f.key(), "fit": mode}));
         }
     }
-    note(ui, t, "Einpassen zeigt das ganze Bild, füllend schneidet die Ränder ab. Einzelne Clips: Eigenschaften › Transform.");
+    // what fills the frame behind the main clips
+    let mains: Vec<u64> =
+        app.fc.session.active_sequence().map(|q| br_video::main_track::main_clips(q).iter().map(|it| it.id.0).collect()).unwrap_or_default();
+    let now = app.fc.session.active_sequence().and_then(|q| mains.first().map(|c| br_video::frame::fill_of(q, filmcraft_project::ClipId(*c))));
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new("Hintergrund").size(12.5).color(t.dim));
+        for (mode, label) in [("none", "keiner"), ("blur", "unscharf"), ("color", "schwarz")] {
+            let on = matches!(
+                (&now, mode),
+                (Some(br_video::frame::Fill::Blur(_)), "blur")
+                    | (Some(br_video::frame::Fill::Color(_)), "color")
+                    | (Some(br_video::frame::Fill::None) | None, "none")
+            );
+            let r = ui.selectable_label(on, label);
+            app.widgets.insert(format!("vformat.bg.{mode}"), r.rect);
+            if r.clicked() && !on && !mains.is_empty() {
+                run(app, &ctx, "br.video.background", json!({"mode": mode, "color": "#000000", "clips": mains}));
+            }
+        }
+    });
+    note(
+        ui,
+        t,
+        "Einpassen zeigt das ganze Bild, füllend schneidet die Ränder ab, automatisch folgt dabei dem Motiv. Einzelne Clips: Inspector › Transformieren und Hintergrund.",
+    );
 }
 
 fn export_panel(app: &mut BrApp, ui: &mut Ui, t: &Theme) {

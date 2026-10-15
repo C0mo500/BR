@@ -26,6 +26,7 @@ filmcraft-ui-egui = { workspace = true }
 filmcraft-export = { workspace = true }
 filmcraft-gpu = { workspace = true }
 filmcraft-platform = { workspace = true }
+filmcraft-geom = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-render = { workspace = true }
 filmcraft-time = { workspace = true }

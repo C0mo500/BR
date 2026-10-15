@@ -249,6 +249,9 @@ pub fn monitor(app: &mut BrApp, ctx: &egui::Context) {
         return;
     }
     let Some(p) = ctx.input(|i| i.pointer.interact_pos()) else { return };
+    if ctx.layer_id_at(p).is_some_and(|l| l.order != egui::Order::Background && l.order != egui::Order::Tooltip) {
+        return;
+    }
     let Some(spot) = monitor_spot(app, p) else { return };
     let Some(payload) = current(app, ctx) else { return };
     let outline = match spot {

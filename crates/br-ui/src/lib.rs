@@ -20,6 +20,7 @@ pub mod desktop;
 pub mod drop;
 pub mod headless;
 pub mod inspector;
+pub mod monitor;
 pub mod photo;
 mod style;
 pub mod timeline;
@@ -124,6 +125,8 @@ pub struct BrApp {
     pub inspector: inspector::InspectorState,
     /// BR's asset bar on the Schnitt page.
     pub assets: assets::AssetState,
+    /// The Program monitor's selection behaviour.
+    pub monitor: monitor::MonitorState,
     /// Every font family the apps draw with was bound at the start of this frame.
     fonts_ok: bool,
     /// Screen rectangles of BR's controls from the last frame, by name (`page.foto`,
@@ -203,6 +206,7 @@ impl BrApp {
             timeline: timeline::TimelineState::default(),
             inspector: inspector::InspectorState::default(),
             assets: assets::AssetState::default(),
+            monitor: monitor::MonitorState::default(),
             cursor: None,
             fonts_ok: false,
             widgets: HashMap::new(),
@@ -363,6 +367,7 @@ impl BrApp {
                 cut::set_area(self, area);
                 cut::show(self, &ctx);
                 drop::monitor(self, &ctx);
+                monitor::after(self, &ctx);
                 cut::draw_toast(self, &ctx);
                 // FilmCraft switched its own mode (File ▸ Export ▸ Media…, Import mode's cards):
                 // show the page that has it
