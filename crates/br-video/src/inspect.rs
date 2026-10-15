@@ -1146,9 +1146,13 @@ fn apply(s: &mut Session, tg: &Target, value: Value, input: Option<Value>, keyfr
             let c = tg.clip.ok_or_else(|| other("no clip"))?;
             let on = want_bool(&value, "Rückwärts")?;
             let (_, it) = q.find_item(c).ok_or_else(|| other("no such clip"))?;
-            // as Tempo › Rückwärts does it: with its sound, a speed curve as a whole
             if it.reverse != on {
-                crate::speed::reverse(s, &json!({"clips": [c.0]})).map_err(other)?;
+                if track_kind(q, c) == Some(TrackKind::Video) {
+                    // as Tempo › Rückwärts does it: with its sound, a speed curve as a whole
+                    crate::speed::reverse(s, &json!({"clips": [c.0]})).map_err(other)?;
+                } else {
+                    s.execute("clip.speedDuration", json!({"clips": [c.0], "speed": it.speed.abs() * 100.0, "reverse": on, "ripple": false}))?;
+                }
             }
             Ok(None)
         }
