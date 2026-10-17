@@ -17,30 +17,30 @@ shnyp-ui = { path = "crates/shnyp-ui" }
 shnyp-video = { path = "crates/shnyp-video" }
 
 # LightCraft (photo engine and its Pro interface), all pinned to one upstream commit
-lightcraft-engine = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
-lightcraft-ui-egui = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
-lightcraft-mcp = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
-lightcraft-geom = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
-lightcraft-raster = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
-lightcraft-codecs = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
-lightcraft-sysmem = { git = "https://github.com/storytold/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
+lightcraft-engine = { git = "https://github.com/C0mo500/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
+lightcraft-ui-egui = { git = "https://github.com/C0mo500/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
+lightcraft-mcp = { git = "https://github.com/C0mo500/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
+lightcraft-geom = { git = "https://github.com/C0mo500/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
+lightcraft-raster = { git = "https://github.com/C0mo500/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
+lightcraft-codecs = { git = "https://github.com/C0mo500/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
+lightcraft-sysmem = { git = "https://github.com/C0mo500/lightcraft", rev = "a4b53b28cc52b68d9f5bdca09fa5666cdad5ad5f" }
 
 # video: FilmCraft (Premiere-style editor: timeline, colour, sound, captions, export), the
 # release shnyp is built and tested against
-filmcraft-engine = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
-filmcraft-ui-egui = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
-filmcraft-export = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
-filmcraft-project = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
-filmcraft-render = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
-filmcraft-time = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
-filmcraft-media = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
-filmcraft-speech = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
-filmcraft-gpu = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
-filmcraft-platform = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
-filmcraft-automation = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
-filmcraft-edit = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
-filmcraft-geom = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
-filmcraft-audio-dsp = { git = "https://github.com/storytold/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-engine = { git = "https://github.com/C0mo500/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-ui-egui = { git = "https://github.com/C0mo500/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-export = { git = "https://github.com/C0mo500/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-project = { git = "https://github.com/C0mo500/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-render = { git = "https://github.com/C0mo500/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-time = { git = "https://github.com/C0mo500/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-media = { git = "https://github.com/C0mo500/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-speech = { git = "https://github.com/C0mo500/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-gpu = { git = "https://github.com/C0mo500/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-platform = { git = "https://github.com/C0mo500/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-automation = { git = "https://github.com/C0mo500/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-edit = { git = "https://github.com/C0mo500/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-geom = { git = "https://github.com/C0mo500/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
+filmcraft-audio-dsp = { git = "https://github.com/C0mo500/filmcraft", rev = "f03e21556d8e3a7155b91892d958debd5255d7af" }
 
 # ui (same versions as LightCraft)
 egui = "0.36"
