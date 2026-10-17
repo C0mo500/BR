@@ -164,6 +164,9 @@ für den Ton, abschaltbar mit `--no-default-features`), und das Fenster braucht 
 X11/Wayland-Bibliotheken (`libxkbcommon-x11`, Mesa). Für die Video-Tests muss `ffmpeg` vorhanden sein;
 ohne es werden diese Tests übersprungen.
 
+FilmCraft und LightCraft kommen aus den Forks [C0mo500/filmcraft](https://github.com/C0mo500/filmcraft) und
+[C0mo500/lightcraft](https://github.com/C0mo500/lightcraft), auf feste Stände gepinnt (`Cargo.toml`).
+
 ```sh
 cargo run --release -p shnyp
 cargo test --workspace               # läuft ohne Bildschirm und ohne GPU
